@@ -22,6 +22,20 @@ from vispy.scene.cameras import TurntableCamera
 from vispy.util import keys
 
 
+# Camera (azimuth, elevation) in degrees for the standard views, Z up. Top
+# looks down with X right and Y up the screen; Front looks along +Y, Back
+# along -Y, Left along +X, Right along -X. "3d" is the starting angle.
+VIEWS = {
+    "top": (0.0, 90.0),
+    "front": (0.0, 0.0),
+    "back": (180.0, 0.0),
+    "left": (-90.0, 0.0),
+    "right": (90.0, 0.0),
+    "bottom": (0.0, -90.0),
+    "3d": (30.0, 30.0),
+}
+
+
 class _CloudCompareCamera(TurntableCamera):
     """Turntable camera with CloudCompare's mouse map: left-drag orbits,
     right-drag pans, wheel zooms.
@@ -291,6 +305,13 @@ class CloudView:
             z=(float(lo[2]), float(hi[2])),
             margin=0.05,
         )
+
+    def set_view(self, name: str) -> None:
+        """Look at the cloud from one of :data:`VIEWS`, like CloudCompare's
+        view buttons: only the viewing direction changes, so the pivot and
+        zoom stay where they were."""
+        cam = self.view.camera
+        cam.azimuth, cam.elevation = VIEWS[name]
 
     def fly_to(self, center_xyz, span: float) -> None:
         cam = self.view.camera

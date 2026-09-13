@@ -180,7 +180,11 @@ Navigation matches CloudCompare: clouds open **Z-up**, **left-drag rotates,
 right-drag pans, wheel zooms**. **Double-click a point** while navigating to
 recentre the orbit on it. A metric scale bar and an X/Y/Z orientation tripod
 sit in the bottom-left of the view; the **point size** spinner floats in the
-top-left.
+top-left, with CloudCompare's standard view buttons below it: **Top**,
+**Front**, **Back**, **Left**, **Right** and **Bottom** turn the camera to look
+at that side (Top looks straight down, Front along +Y), and **3D** goes back to
+the tilted view. They only turn the camera, so whatever you're centred on
+stays in view at the same zoom.
 
 The right-hand panel holds two tables. **All Trees** (top) lists every tree in the
 file, a Done column (`✓` when reviewed), tree ID and point count, with a

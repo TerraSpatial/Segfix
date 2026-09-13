@@ -816,16 +816,45 @@ class SegFixWidget(QWidget):
         if len(self.c.view.coords):
             self.c.view.size = value
 
+    # (label, tooltip) for the view buttons under the point size; the keys
+    # are cloudview.VIEWS.
+    _VIEW_BUTTONS = {
+        "top": ("Top", "Top view: look straight down"),
+        "front": ("Front", "Front view: look along +Y"),
+        "back": ("Back", "Back view: look along -Y"),
+        "left": ("Left", "Left view: look along +X"),
+        "right": ("Right", "Right view: look along -X"),
+        "bottom": ("Bottom", "Bottom view: look straight up"),
+        "3d": ("3D", "Back to the tilted 3D view"),
+    }
+
     def _build_point_size_overlay(self) -> None:
-        """Float the point-size spinner over the canvas' top-left corner."""
+        """Float the point-size spinner over the canvas' top-left corner,
+        with CloudCompare-style view buttons below it. A view button only
+        turns the camera: pivot and zoom stay."""
         native = self.c.view.native
         box = QWidget(native)
         box.setObjectName("pointSizeOverlay")  # styled by _apply_overlay_theme
-        row = QHBoxLayout(box)
-        row.setContentsMargins(6, 4, 6, 4)
+        col = QVBoxLayout(box)
+        col.setContentsMargins(6, 4, 6, 4)
+        col.setSpacing(4)
+        row = QHBoxLayout()
         row.setSpacing(4)
         row.addWidget(QLabel("Point size"))
         row.addWidget(self.size_spin)
+        row.addStretch(1)
+        col.addLayout(row)
+        views = QHBoxLayout()
+        views.setSpacing(2)
+        for name, (label, tip) in self._VIEW_BUTTONS.items():
+            btn = QToolButton()
+            btn.setObjectName(f"view_{name}")
+            btn.setText(label)
+            btn.setToolTip(tip)
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # keep keys on the canvas
+            btn.clicked.connect(lambda _c=False, n=name: self.c.view.set_view(n))
+            views.addWidget(btn)
+        col.addLayout(views)
         box.adjustSize()
         box.move(10, 10)
         box.show()

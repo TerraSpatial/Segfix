@@ -24,6 +24,7 @@ project.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -225,10 +226,9 @@ def check_for_update(timeout: float = 8.0) -> UpdateStatus | None:
     return _check_pypi(timeout)
 
 
-def apply_update(status: UpdateStatus) -> str:
-    """Install the update ``status`` describes. Returns the tools' stdout for
-    display; raises ``subprocess.CalledProcessError`` if a step fails, so the
-    caller can show the user what went wrong.
+def update_commands(status: UpdateStatus) -> list[tuple[list[str], Path | None]]:
+    """The commands that install the update ``status`` describes, in order,
+    each with the folder to run it in.
 
     PyPI: pip into the running interpreter (``sys.executable -m pip``, so a
     conda env or virtualenv upgrades itself, not whatever ``pip`` is first on
@@ -238,20 +238,85 @@ def apply_update(status: UpdateStatus) -> str:
     failing.
     """
     if status.source == "pypi":
-        install = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade",
-             f"segfix=={status.latest}"],
-            capture_output=True, text=True, timeout=600, check=True,
+        return [([sys.executable, "-m", "pip", "install", "--upgrade",
+                  f"segfix=={status.latest}"], None)]
+    return [
+        (["git", "pull", "--ff-only"], status.repo_root),
+        ([sys.executable, "-m", "pip", "install", "-e", "."], status.repo_root),
+    ]
+
+
+def apply_update(status: UpdateStatus) -> str:
+    """Install the update ``status`` describes, in this process. Returns the
+    tools' stdout for display; raises ``subprocess.CalledProcessError`` if a
+    step fails, so the caller can show the user what went wrong.
+
+    Not on Windows: see :func:`must_close_to_update`.
+    """
+    out = []
+    for cmd, cwd in update_commands(status):
+        done = subprocess.run(
+            cmd, cwd=cwd, capture_output=True, text=True, timeout=600,
+            check=True,
         )
-        return install.stdout
-    pull = subprocess.run(
-        ["git", "pull", "--ff-only"],
-        cwd=status.repo_root, capture_output=True, text=True, timeout=60,
-        check=True,
-    )
-    install = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-e", "."],
-        cwd=status.repo_root, capture_output=True, text=True, timeout=600,
-        check=True,
-    )
-    return pull.stdout + install.stdout
+        out.append(done.stdout)
+    return "".join(out)
+
+
+def must_close_to_update() -> bool:
+    """Whether segfix has to close before an update can install.
+
+    On Windows a running program's files are locked: pip can't replace
+    ``Scripts\\segfix.exe`` while segfix runs from it, fails part way with
+    ``WinError 32``, and leaves a half-removed copy behind. Use
+    :func:`schedule_update_after_exit` there instead of :func:`apply_update`.
+    """
+    return sys.platform == "win32"
+
+
+def schedule_update_after_exit(status: UpdateStatus) -> None:
+    """Start the update in its own console window, to run once segfix has
+    exited; the caller then closes segfix. See :mod:`segfix._update_helper`,
+    which does the waiting and runs :func:`update_commands`.
+
+    The helper is copied to a temporary folder and run from there, so nothing
+    it runs from is inside the package pip is about to replace.
+    """
+    import shutil
+    import sysconfig
+    import tempfile
+
+    from . import _update_helper
+
+    scripts = Path(sysconfig.get_path("scripts"))
+    if status.source == "pypi":
+        done = f"segfix {status.latest} is installed."
+    else:
+        done = "segfix is up to date with its upstream branch."
+    job = {
+        "pid": os.getpid(),
+        "commands": [[cmd, str(cwd) if cwd else None]
+                     for cmd, cwd in update_commands(status)],
+        "locked": [str(p) for p in sorted(scripts.glob("segfix*.exe"))],
+        "site_dirs": sorted({sysconfig.get_path("purelib"),
+                             sysconfig.get_path("platlib")}),
+        "done_message": done + " Start it again with: segfix",
+    }
+    folder = Path(tempfile.mkdtemp(prefix="segfix-update-"))
+    script = folder / "segfix_update.py"
+    shutil.copyfile(_update_helper.__file__, script)
+    job_file = folder / "job.json"
+    job_file.write_text(json.dumps(job), encoding="utf-8")
+
+    cmd = [sys.executable, "-I", str(script), str(job_file)]
+    flags = (getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+    try:
+        # Out of any job object segfix's launcher put it in, so closing
+        # segfix can't take the helper down with it.
+        subprocess.Popen(cmd, cwd=Path.home(), creationflags=flags | breakaway)
+    except OSError:
+        # That job doesn't allow breaking away; the launcher's own jobs let
+        # children leave silently anyway.
+        subprocess.Popen(cmd, cwd=Path.home(), creationflags=flags)

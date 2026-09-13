@@ -165,6 +165,40 @@ def test_git_update_pulls_then_reinstalls_editable(recorded_runs, tmp_path):
     assert all(cwd == tmp_path for _, cwd in recorded_runs)
 
 
+def test_windows_update_runs_after_segfix_exits(monkeypatch, tmp_path):
+    """The helper gets the same commands apply_update would run, this
+    process's id to wait for, and a copy of itself outside the package."""
+    import json
+    import os
+    import tempfile
+    from pathlib import Path
+
+    from segfix import _update_helper
+
+    started = []
+    monkeypatch.setattr(
+        update.subprocess, "Popen",
+        lambda cmd, **kw: started.append((cmd, kw)),
+    )
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    status = UpdateStatus(source="pypi", latest="1.0.3")
+    update.schedule_update_after_exit(status)
+
+    [(cmd, kwargs)] = started
+    assert cmd[:2] == [sys.executable, "-I"]
+    script, job_file = Path(cmd[2]), Path(cmd[3])
+    assert script.parent == job_file.parent
+    assert script.parent.parent == tmp_path  # outside the package
+    assert script.read_text() == Path(_update_helper.__file__).read_text()
+    job = json.loads(job_file.read_text())
+    assert job["pid"] == os.getpid()
+    assert job["commands"] == [
+        [cmd, None] for cmd, _ in update.update_commands(status)
+    ]
+    assert job["done_message"].startswith("segfix 1.0.3 is installed.")
+    assert kwargs["cwd"] == Path.home()
+
+
 # -- is this segfix's own checkout? ------------------------------------------
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 

@@ -34,7 +34,9 @@ pip install segfix
 
 The startup dialog tells you when a newer release is on PyPI, and its
 **Update…** button runs `pip install --upgrade` for you (restart segfix
-afterwards). Running from a clone instead, it tracks new commits on the branch
+afterwards). On Windows, which can't replace a program while it runs, segfix
+closes first and the update installs in its own window; start segfix again
+when that window says it's done. Running from a clone instead, it tracks new commits on the branch
 you're on and updates with `git pull` + `pip install -e .`, so a development
 checkout stays a checkout.
 

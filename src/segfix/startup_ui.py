@@ -201,6 +201,9 @@ class StartupDialog(QDialog):
         self.update_btn.show()
 
     def _apply_update(self) -> None:
+        if update.must_close_to_update():
+            self._update_after_exit()
+            return
         # Blocking is deliberate: this only runs after an explicit click, a
         # pip upgrade (or `git pull` + reinstall) is normally a few seconds,
         # and there's no meaningful "cancel an install halfway through" to
@@ -225,6 +228,32 @@ class StartupDialog(QDialog):
             self, "Updated",
             "segfix has been updated. Restart it to use the new version.",
         )
+
+    def _update_after_exit(self) -> None:
+        """Windows: segfix can't be replaced while it runs, so hand the
+        install to a helper window and close segfix (see
+        :func:`update.must_close_to_update`)."""
+        answer = QMessageBox.question(
+            self, "Update segfix",
+            "Windows can't replace segfix while it is running, so segfix "
+            "will close and the update will install in a separate window.\n\n"
+            "Start segfix again once that window says it's done.\n\n"
+            "Close segfix and update now?",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Ok,
+        )
+        if answer != QMessageBox.StandardButton.Ok:
+            return
+        try:
+            update.schedule_update_after_exit(self._update_status)
+        except Exception as exc:
+            QMessageBox.critical(self, "Update failed", str(exc))
+            return
+        app = QApplication.instance()
+        self.reject()
+        # Also ends the main window's event loop when this dialog was opened
+        # from File > Open Project..., so segfix really exits.
+        app.quit()
 
     def done(self, result) -> None:
         # Overridden rather than closeEvent(): QDialog.accept()/reject() call

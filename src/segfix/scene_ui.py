@@ -60,7 +60,7 @@ class SceneController:
         self._global_idx = global_idx
 
         self.view.load_cloud(cloud, point_size=self.point_size)
-        self.seg.set_cloud(cloud)
+        self.seg.set_cloud(cloud, focus=label)
         self.view.reset_view()
         return (
             f"Loaded tree {label} + {len(neighbours)} neighbour(s); "
@@ -72,19 +72,20 @@ class SceneController:
             self.catalog.apply(self.seg.cloud, self._global_idx)
 
     def _save(self) -> str:
-        from .progress_ui import progress_window
+        from .progress_ui import run_with_progress
 
         self._flush()  # capture the live scene too, not just prior ones
         # A decimated session interpolates its edits back onto every
         # full-resolution point here, and a Save As copies the whole file:
-        # both scale with the cloud, so a save gets the same progress window
-        # the open does rather than one status line and a frozen canvas.
-        with progress_window(
+        # both scale with the cloud, so a save runs on the worker thread
+        # behind the same progress window an open does, rather than blocking
+        # the GUI thread into a "(Not Responding)" title.
+        msg = run_with_progress(
             self.view.native.window(),
             "Saving",
             os.path.basename(self.catalog.path),
-        ) as report:
-            msg = self.catalog.save(progress=report.report)
+            lambda report, ask: self.catalog.save(progress=report),
+        )
         if self.on_saved is not None:
             self.on_saved()
         return msg

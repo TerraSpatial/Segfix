@@ -66,13 +66,17 @@ ProgressFn = Callable[[str, float], None]
 # The phases of an open and roughly what share of the time each takes, so
 # the bar moves at a believable rate. Measured on a 39M-point PLY: decoding
 # coordinates 0.5s, labels 2.4s, measuring density 1.9s, decimating 12.7s,
-# indexing 4.0s, or 2 / 11 / 9 / 59 / 18 percent. Only the ratios matter.
+# indexing 4.0s. Decimating is now ~2.4x faster (density.voxel_indices sorts
+# once rather than twice), so its 12.7s is ~5.3s and the shares come out at
+# 4 / 17 / 13 / 38 / 28 percent. Only the ratios matter; leaving the old
+# 55% in place would race the bar through the longest phase and then sit on
+# "Indexing trees" for a third of the wait.
 _LOAD_PHASES = (
     ("Reading coordinates", 0.05),
-    ("Reading tree labels", 0.10),
-    ("Measuring point density", 0.10),
-    ("Downsampling", 0.55),
-    ("Indexing trees", 0.20),
+    ("Reading tree labels", 0.17),
+    ("Measuring point density", 0.13),
+    ("Downsampling", 0.37),
+    ("Indexing trees", 0.28),
 )
 
 # Where a save's own phases sit on the bar: everything before is the
@@ -139,6 +143,35 @@ class TreeRecord:
     count: int
     centroid: tuple[float, float]
     bbox: tuple[np.ndarray, np.ndarray]
+
+
+def _label_order(labels: np.ndarray) -> np.ndarray:
+    """``np.argsort(labels, kind="stable")``, via a key numpy radix-sorts.
+
+    numpy's stable sort only takes the radix path for keys of two bytes or
+    fewer; an int32 label array gets a comparison sort instead. Tree ids are
+    a few thousand distinct values at most, so ranking them densely first
+    (one bincount over the label range, then a lookup) gives a uint16 key
+    that sorts in a linear pass — measured 872ms against 219ms on 6M points,
+    for the identical permutation. This runs on every open *and* after every
+    apply(), so it is on the path of a tree switch and a save as well.
+
+    Falls back to sorting the labels themselves when the dense key would not
+    fit: more than 65536 distinct trees, or ids spread so far apart that the
+    bincount would be bigger than the cloud.
+    """
+    if not labels.size:
+        return np.empty(0, dtype=np.intp)
+    lo = int(labels.min())
+    span = int(labels.max()) - lo + 1
+    if span > max(labels.size, 1_000_000):
+        return np.argsort(labels, kind="stable")
+    shifted = (labels.astype(np.int64) - lo)
+    present = np.bincount(shifted, minlength=span) > 0
+    if int(present.sum()) > np.iinfo(np.uint16).max + 1:
+        return np.argsort(labels, kind="stable")
+    rank_of = (np.cumsum(present) - 1).astype(np.uint16)
+    return np.argsort(rank_of[shifted], kind="stable")
 
 
 class _BaseCatalog:
@@ -233,22 +266,48 @@ class _BaseCatalog:
         ):
             return
 
-        if report is not None:
-            report("Measuring point density")
-        self.spacing = density.estimate_spacing(self.coords)
-        if not (0.0 < self.spacing < density.DENSE_SPACING):
+        from . import workspace
+
+        # What the user already said about this project. "voxel_size" present
+        # and None means they declined; absent means they were never asked.
+        decided = workspace.settings(self.path)
+
+        if "spacing" in decided:
+            self.spacing = decided["spacing"]
+        else:
+            if report is not None:
+                report("Measuring point density")
+            self.spacing = density.estimate_spacing(self.coords)
+            workspace.remember(self.path, spacing=self.spacing)
+        if not (0.0 < (self.spacing or 0.0) < density.DENSE_SPACING):
             return
-        chosen = density_prompt(
-            self.spacing, int(self.count), density.suggest_voxel(self.spacing)
-        )
+
+        if "voxel_size" in decided:
+            chosen = decided["voxel_size"]
+        else:
+            chosen = density_prompt(
+                self.spacing, int(self.count), density.suggest_voxel(self.spacing)
+            )
+            workspace.remember(
+                self.path,
+                voxel_size=None if chosen is None else float(chosen),
+            )
         if chosen is None:
             return
 
         if report is not None:
             report("Downsampling")
-        keep = density.voxel_indices(self.coords, float(chosen))
-        if keep.size >= self.count:
-            return  # nothing to gain; stay at full resolution
+        # The kept rows depend only on the coordinates and the voxel size,
+        # and coordinates are never rewritten — a save patches labels. So
+        # this survives every edit, and the stamp only fails it if the file
+        # is replaced underneath.
+        keep = workspace.cached_array(self.path, "voxel")
+        if keep is None:
+            keep = density.voxel_indices(self.coords, float(chosen))
+            workspace.cache_array(self.path, "voxel", keep)
+        keep = np.asarray(keep, dtype=np.int64)
+        if keep.size >= self.count or (keep.size and keep.max() >= self.count):
+            return  # nothing to gain, or a cache that doesn't fit this file
         self._sub_idx = keep
         self.coords = self.coords[keep]
         self.labels = self.labels[keep]
@@ -282,7 +341,21 @@ class _BaseCatalog:
         mins, maxs = raw_coords.min(axis=0), raw_coords.max(axis=0)
         if not needs_global_shift(mins, maxs):
             return None
-        chosen = shift_prompt(mins, maxs, suggest_global_shift(mins, maxs))
+
+        # Asked once per project, not once per open: the shift is a decision
+        # about how to review this cloud, and re-asking it every time invited
+        # a different answer and a scene that no longer matched the notes.
+        from . import workspace
+
+        decided = workspace.settings(self.path)
+        if "global_shift" in decided:
+            chosen = decided["global_shift"]
+        else:
+            chosen = shift_prompt(mins, maxs, suggest_global_shift(mins, maxs))
+            workspace.remember(
+                self.path,
+                global_shift=None if chosen is None else [float(c) for c in chosen],
+            )
         return None if chosen is None else np.asarray(chosen, dtype=np.float64)
 
     def _shift_and_cast(self, raw: np.ndarray) -> np.ndarray:
@@ -357,13 +430,20 @@ class _BaseCatalog:
         tree switch or Save, never per-render, so it's not on the hot path
         that made loading the whole cloud slow.
         """
-        self.order = np.argsort(self.labels, kind="stable")
+        self.order = _label_order(self.labels)
         sorted_labels = self.labels[self.order]
-        # On a sorted array np.unique's first-occurrence index is the group
-        # start, so this replaces a separate cumsum.
-        uniq, starts, counts = np.unique(
-            sorted_labels, return_index=True, return_counts=True
-        )
+        # Run starts, not np.unique: `sorted_labels` is sorted by
+        # construction, and np.unique would sort all N labels a second time
+        # to work that out.
+        if sorted_labels.size:
+            first = np.empty(sorted_labels.size, dtype=bool)
+            first[0] = True
+            np.not_equal(sorted_labels[1:], sorted_labels[:-1], out=first[1:])
+            starts = np.flatnonzero(first)
+            uniq = sorted_labels[starts]
+            counts = np.diff(np.append(starts, sorted_labels.size))
+        else:
+            starts = uniq = counts = np.empty(0, dtype=np.int64)
         self._starts = dict(zip(uniq.tolist(), starts.tolist()))
         self._counts = dict(zip(uniq.tolist(), counts.tolist()))
 
@@ -435,9 +515,15 @@ class _BaseCatalog:
         # 200M-point file, for a mask that fits in 200MB.
         near = density.in_box(self.coords, lo, hi)
         near &= self.labels == UNASSIGNED
-        unassigned_idx = np.flatnonzero(near)
-
-        global_idx = np.union1d(tree_idx, unassigned_idx).astype(np.int64)
+        # Union through a mask rather than np.union1d, which concatenates and
+        # sorts: the trees' own rows plus the unassigned ones run to millions
+        # on a plot-sized file, and sorting them was two thirds of the time to
+        # open a tree. Marking a mask and reading it back is one pass, and
+        # comes out ascending and duplicate-free just the same.
+        picked = np.zeros(len(self.labels), dtype=bool)
+        picked[tree_idx] = True
+        picked |= near
+        global_idx = np.flatnonzero(picked)
 
         sub = self._mm[self._rows(global_idx)]
         coords = self._decode_coords(sub)

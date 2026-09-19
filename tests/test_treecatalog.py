@@ -362,3 +362,89 @@ def test_wrong_extension_content_rejected_fast_not_scanned(tmp_path):
 
     with pytest.raises(ValueError, match="doesn't look like"):
         io.load(str(fake))
+
+
+def test_load_unions_trees_and_nearby_unassigned_without_duplicates(tmp_path):
+    """load() collects the requested trees plus the unassigned points near
+    them. It used to merge the two with np.union1d, which concatenates and
+    sorts millions of indices; a mask does it in one pass and must give the
+    same thing — ascending, duplicate-free, and nothing extra."""
+    coords = np.array(
+        [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0],      # tree 1
+         [0.2, 0.0, 0.0],                        # unassigned, right beside it
+         [50.0, 50.0, 0.0],                      # unassigned, far away
+         [0.3, 0.0, 0.0], [0.4, 0.0, 0.0]],      # tree 2
+        dtype=np.float64,
+    )
+    labels = np.array([1, 1, UNASSIGNED, UNASSIGNED, 2, 2], dtype=np.int32)
+    path = tmp_path / "plot.las"
+    _write_arbor_las(path, coords, labels)
+    cat = open_catalog(str(path))
+
+    cloud, global_idx = cat.load([1], margin=1.0)
+
+    assert global_idx.tolist() == [0, 1, 2]      # sorted, unique, no tree 2
+    assert cloud.n_points == 3
+    # The far unassigned point is outside the margin and stays out.
+    assert 3 not in global_idx.tolist()
+
+    both, idx_both = cat.load([1, 2], margin=1.0)
+    assert idx_both.tolist() == [0, 1, 2, 4, 5]
+    assert both.n_points == 5
+
+
+def test_load_does_not_repeat_a_point_shared_by_the_box_and_a_tree(tmp_path):
+    """A tree's own points sit inside its own bounding box, so the mask has
+    to be a union rather than a concatenation."""
+    coords = np.array(
+        [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.2, 0.0, 0.0]], dtype=np.float64
+    )
+    labels = np.array([1, UNASSIGNED, 1], dtype=np.int32)
+    path = tmp_path / "plot.las"
+    _write_arbor_las(path, coords, labels)
+    cat = open_catalog(str(path))
+
+    cloud, global_idx = cat.load([1], margin=1.0)
+
+    assert global_idx.tolist() == [0, 1, 2]
+    assert cloud.n_points == 3
+
+
+def test_label_order_matches_a_plain_argsort():
+    """_label_order ranks labels densely so numpy radix-sorts them; it has to
+    return the same permutation argsort would, not merely the same grouping —
+    indices_for hands out slices of it."""
+    from segfix.treecatalog import _label_order
+
+    rng = np.random.default_rng(0)
+    for labels in (
+        rng.integers(1, 500, 50_000).astype(np.int32),
+        np.zeros(1000, dtype=np.int32),                      # all one label
+        np.arange(5000, dtype=np.int32),                     # all distinct
+        rng.integers(-1, 3, 200).astype(np.int32),           # noise + unassigned
+        np.array([], dtype=np.int32),
+        np.array([7], dtype=np.int32),
+    ):
+        got = _label_order(labels)
+        expected = np.argsort(labels, kind="stable")
+        np.testing.assert_array_equal(got, expected)
+
+
+def test_label_order_falls_back_on_ids_spread_too_far():
+    """A handful of points with astronomically spaced ids must not try to
+    allocate a bincount the size of the range."""
+    from segfix.treecatalog import _label_order
+
+    labels = np.array([1, 50_000_000, 7, 2_000_000_000], dtype=np.int32)
+    np.testing.assert_array_equal(
+        _label_order(labels), np.argsort(labels, kind="stable")
+    )
+
+
+def test_label_order_handles_negative_labels():
+    from segfix.treecatalog import _label_order
+
+    labels = np.array([-1, 5, -1, 0, 5, 3], dtype=np.int32)
+    np.testing.assert_array_equal(
+        _label_order(labels), np.argsort(labels, kind="stable")
+    )

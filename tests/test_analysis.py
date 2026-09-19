@@ -82,3 +82,89 @@ def test_connected_components_within_labels_disjoint_blobs():
 def test_point_spacing_matches_a_regular_grid():
     g = np.mgrid[0:10, 0:10, 0:3].reshape(3, -1).T.astype(np.float32) * 0.5
     assert abs(analysis.point_spacing(g) - 0.5) < 1e-6
+
+
+# -- connectivity on big clouds ----------------------------------------------
+def _two_blobs(n_each, gap_between, spacing=0.01, seed=0):
+    """Two solid blobs separated by ``gap_between`` metres of nothing."""
+    rng = np.random.default_rng(seed)
+    side = (n_each ** (1 / 3)) * spacing
+    a = rng.random((n_each, 3)) * side
+    b = a + [side + gap_between, 0.0, 0.0]
+    return np.vstack([a, b]), side
+
+
+def test_a_big_cloud_takes_the_voxel_path_and_still_separates_the_blobs():
+    """Past _VOXEL_ABOVE the graph is built on voxel representatives. The
+    blobs must still come back as two, and every point must land in the blob
+    it belongs to."""
+    coords, _ = _two_blobs(15_000, gap_between=0.5)
+    assert len(coords) > analysis._VOXEL_ABOVE
+
+    comp = analysis.connected_components_within(coords, eps=0.05)
+
+    assert len(np.unique(comp)) == 2
+    assert len(np.unique(comp[:15_000])) == 1
+    assert len(np.unique(comp[15_000:])) == 1
+    assert comp[0] != comp[15_000]
+
+
+def test_the_voxel_path_matches_the_exact_one_on_well_separated_blobs():
+    coords, _ = _two_blobs(12_000, gap_between=0.5)
+    eps = 0.05
+    exact = analysis._components_exact(
+        np.ascontiguousarray(coords, dtype=np.float64), eps
+    )
+    got = analysis.connected_components_within(coords, eps)
+    # Same partition, whatever the component numbering.
+    assert np.array_equal(
+        np.unique(exact, return_inverse=True)[1],
+        np.unique(got, return_inverse=True)[1],
+    )
+
+
+def test_points_sharing_a_voxel_always_share_a_component():
+    """The guarantee the reduction rests on: a voxel is eps/4 across, so its
+    diagonal is 0.43 eps and everything in it is one blob by definition."""
+    coords, _ = _two_blobs(15_000, gap_between=0.5)
+    eps = 0.05
+    comp = analysis.connected_components_within(coords, eps)
+    inverse, _ = analysis._voxel_groups(
+        np.ascontiguousarray(coords, dtype=np.float64), eps / analysis._VOXEL_DIVISOR
+    )
+    order = np.argsort(inverse, kind="stable")
+    voxel, blob = inverse[order], comp[order]
+    starts = np.flatnonzero(np.r_[True, voxel[1:] != voxel[:-1]])
+    # Every run of one voxel's points carries a single component id.
+    assert np.array_equal(blob[starts][np.searchsorted(
+        starts, np.arange(len(voxel)), side="right") - 1], blob)
+
+
+def test_a_small_cloud_is_still_computed_exactly():
+    coords, _ = _two_blobs(200, gap_between=0.5)
+    assert len(coords) <= analysis._VOXEL_ABOVE
+    eps = 0.05
+    exact = analysis._components_exact(
+        np.ascontiguousarray(coords, dtype=np.float64), eps
+    )
+    assert np.array_equal(
+        analysis.connected_components_within(coords, eps), exact
+    )
+
+
+def test_the_cost_stops_following_the_gap():
+    """The reduction exists so a loose gap does not explode the pair count:
+    sixteen times the gap must not cost anything like sixteen cubed."""
+    import time
+
+    coords, side = _two_blobs(40_000, gap_between=2.0, spacing=0.02)
+    spacing = 0.02
+
+    def took(eps):
+        start = time.perf_counter()
+        analysis.connected_components_within(coords, eps)
+        return time.perf_counter() - start
+
+    tight = took(spacing)
+    loose = took(spacing * 16)
+    assert loose < tight * 8  # cubic growth would be ~4000x

@@ -126,9 +126,19 @@ jobs:
         run: |
           python -m venv "$env:RUNNER_TEMP\psenv"
           $py = "$env:RUNNER_TEMP\psenv\Scripts\python.exe"
+          # -Source . installs the checkout being tested. Without it the
+          # script fetches the current PyPI release, which is the previous
+          # version -- so this would be testing last release's code, and
+          # would fail on anything added since.
           & powershell -ExecutionPolicy Bypass -File packaging\install-segfix.ps1 `
-            -Python $py
+            -Python $py -Source .
           if ($LASTEXITCODE -ne 0) { throw "install-segfix.ps1 failed" }
+
+          # python.exe first: pythonw.exe is silent by design, so when the
+          # liveness check below fails it says nothing about why.
+          $env:QT_QPA_PLATFORM = "offscreen"
+          & $py -m segfix --help
+          if ($LASTEXITCODE -ne 0) { throw "python -m segfix failed to start" }
 
           $link = Join-Path ([Environment]::GetFolderPath("Programs")) "segfix.lnk"
           if (-not (Test-Path $link)) { throw "no Start Menu shortcut was created" }
@@ -141,8 +151,7 @@ jobs:
             throw "shortcut should point at pythonw.exe, not a generated .exe"
           }
 
-          # And the thing it points at must actually start.
-          $env:QT_QPA_PLATFORM = "offscreen"
+          # And the thing the shortcut points at must actually start.
           $app = Start-Process -FilePath $shortcut.TargetPath -PassThru `
             -ArgumentList $shortcut.Arguments
           Start-Sleep -Seconds 20

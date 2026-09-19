@@ -26,6 +26,11 @@
 .PARAMETER Version
     A specific version to pin, e.g. "1.0.6". Defaults to the newest on PyPI.
 
+.PARAMETER Source
+    What to hand pip instead of the name "segfix" - a checkout to install
+    from ("." in a clone), or a wheel. Mostly for testing a release before
+    it is published; -Version is ignored when this is given.
+
 .PARAMETER NoShortcut
     Install the package but do not create the Start Menu shortcut.
 
@@ -40,6 +45,7 @@
 param(
     [string] $Python,
     [string] $Version,
+    [string] $Source,
     [switch] $NoShortcut
 )
 
@@ -69,7 +75,9 @@ if ([version]$check -lt [version]"3.10" -or [version]$check -ge [version]"3.13")
     throw "segfix needs Python 3.10-3.12; this one is $check"
 }
 
-$spec = if ($Version) { "segfix==$Version" } else { "segfix" }
+$spec = if ($Source) { $Source }
+        elseif ($Version) { "segfix==$Version" }
+        else { "segfix" }
 Write-Host "Installing $spec (user-level, no admin)..."
 # --user keeps it out of a shared install; harmless and ignored inside a
 # conda env or a venv, which is where most people will point this.

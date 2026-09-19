@@ -118,47 +118,6 @@ jobs:
           cd dist
           7z a -tzip "segfix-${{ steps.version.outputs.value }}-portable.zip" segfix/
 
-      # -- does the no-admin route work? ----------------------------------
-      # The PowerShell installer is what a locked-down machine gets, where an
-      # unknown .exe is refused. It has to install into an existing Python
-      # and leave a shortcut pointing at that interpreter.
-      - name: Check the no-admin PowerShell route
-        run: |
-          python -m venv "$env:RUNNER_TEMP\psenv"
-          $py = "$env:RUNNER_TEMP\psenv\Scripts\python.exe"
-          # -Source . installs the checkout being tested. Without it the
-          # script fetches the current PyPI release, which is the previous
-          # version -- so this would be testing last release's code, and
-          # would fail on anything added since.
-          & powershell -ExecutionPolicy Bypass -File packaging\install-segfix.ps1 `
-            -Python $py -Source .
-          if ($LASTEXITCODE -ne 0) { throw "install-segfix.ps1 failed" }
-
-          # python.exe first: pythonw.exe is silent by design, so when the
-          # liveness check below fails it says nothing about why.
-          $env:QT_QPA_PLATFORM = "offscreen"
-          & $py -m segfix --help
-          if ($LASTEXITCODE -ne 0) { throw "python -m segfix failed to start" }
-
-          $link = Join-Path ([Environment]::GetFolderPath("Programs")) "segfix.lnk"
-          if (-not (Test-Path $link)) { throw "no Start Menu shortcut was created" }
-          $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($link)
-          Write-Host "shortcut -> $($shortcut.TargetPath) $($shortcut.Arguments)"
-          if ($shortcut.Arguments -notmatch "-m segfix") {
-            throw "shortcut does not launch via -m segfix"
-          }
-          if ($shortcut.TargetPath -notmatch "pythonw\.exe$") {
-            throw "shortcut should point at pythonw.exe, not a generated .exe"
-          }
-
-          # And the thing the shortcut points at must actually start.
-          $app = Start-Process -FilePath $shortcut.TargetPath -PassThru `
-            -ArgumentList $shortcut.Arguments
-          Start-Sleep -Seconds 20
-          if ($app.HasExited) { throw "pythonw -m segfix died (exit $($app.ExitCode))" }
-          Stop-Process -Id $app.Id -Force
-          Write-Host "OK: the no-admin route installs and launches"
-
       - uses: actions/upload-artifact@v7
         with:
           name: segfix-windows
@@ -179,5 +138,4 @@ jobs:
                  --title "$GITHUB_REF_NAME" --notes "segfix $GITHUB_REF_NAME"
           gh release upload "$GITHUB_REF_NAME" \
             dist/segfix-*-setup.exe \
-            dist/segfix-*-portable.zip \
-            packaging/install-segfix.ps1 --clobber
+            dist/segfix-*-portable.zip --clobber

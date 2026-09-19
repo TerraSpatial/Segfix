@@ -60,36 +60,22 @@ pip install -e .
 
 ### On Windows
 
-Three routes, in the order most likely to work on a managed machine:
+Two ready-made builds on the
+[releases page](https://github.com/tim-devereux/segfix/releases), neither
+needing admin and neither needing Python:
 
-**1. No admin, no new executable.** A managed laptop often refuses to run a
-binary it has not seen before — including the small `segfix.exe` that pip
-puts in `Scripts\`. This route installs into a Python you already have and
-makes a Start Menu shortcut to *that interpreter*, so nothing new needs
-trusting:
+**The installer** — `segfix-<version>-setup.exe`. Installs per-user by
+default (all-users only if you have the rights), adds a Start Menu entry and
+an uninstaller. Being unsigned, Windows shows a SmartScreen warning the
+first time: **More info** → **Run anyway**.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File packaging\install-segfix.ps1
-```
+**The portable zip** — `segfix-<version>-portable.zip`. Unzip anywhere and
+run `segfix.exe` from the folder. Nothing is written outside it.
 
-The shortcut runs `pythonw.exe -m segfix`. Point it at a specific
-environment with `-Python <path to python.exe>`. Everything lands under your
-own user; admin is never asked for.
-
-**2. The installer.** `segfix-<version>-setup.exe` on the
-[releases page](https://github.com/tim-devereux/segfix/releases). It installs
-per-user by default — no admin — and offers all-users only if you have it.
-Being unsigned, it will show a SmartScreen warning the first time
-("More info" → "Run anyway"); signing it needs a code-signing certificate,
-which the project does not have.
-
-**3. The portable zip.** `segfix-<version>-portable.zip`: unzip anywhere and
-run `segfix.exe` from the folder. No installer, nothing written outside the
-folder.
-
-Routes 2 and 3 bundle their own Python, so nothing else is needed. Route 1
-needs a Python 3.10–3.12 — a [miniforge](https://conda-forge.org/download/)
-install is the usual one, and it needs no admin either.
+Both bundle their own Python, Qt, numpy and scipy, including Qt's software
+OpenGL fallback for machines without a usable graphics driver. If a managed
+machine refuses to run either — some block unsigned executables outright —
+`pip install segfix` into an existing Python still works, as above.
 
 ## Run
 

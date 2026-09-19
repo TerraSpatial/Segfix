@@ -155,8 +155,19 @@ class StartupDialog(QDialog):
             suffix += 1
             candidate = Path(parent) / f"{stem}_{suffix}"
 
+        # Importing is a multi-gigabyte copy, or a whole LAZ decompression,
+        # before open_catalog() and its own bar are anywhere in sight. Behind
+        # a bare call that was the longest unexplained pause in the app: the
+        # dialog simply stopped repainting until a project appeared.
+        from .progress_ui import run_with_progress
+
         try:
-            data_path = workspace.create_workspace(source, candidate)
+            data_path = run_with_progress(
+                self, "Importing cloud", Path(source).name,
+                lambda report, ask: workspace.create_workspace(
+                    source, candidate, report=report
+                ),
+            )
         except Exception as exc:  # OSError, or laspy failing on a bad LAS/LAZ
             QMessageBox.critical(self, "Import failed", str(exc))
             return

@@ -171,7 +171,7 @@ where another tree's or the ground's point was the one kept.
 
 The menu bar carries the session-level actions: **File ▸ Open Project…**
 (`Ctrl+O`, reopens the startup dialog and switches project without a manual
-restart) and **Save Project** (`Ctrl+S`); **Edit ▸ Undo / Redo** (`Ctrl+Z` /
+restart), **Save Project** (`Ctrl+S`) and **Export Trees…**; **Edit ▸ Undo / Redo** (`Ctrl+Z` /
 `Ctrl+Shift+Z`); **Preferences ▸ Theme ▸ Light / Dark**, applied immediately
 and remembered (via `QSettings`) for next launch; and **Help ▸ About segfix**
 for the version, links, and full MIT licence.
@@ -268,6 +268,14 @@ to the right edge of the 3D view, next to the points they act on.
 6. **Save** (`Ctrl+S`) writes to the project copy, never the original import.
    It patches only the points whose label changed, in place, so the header and
    every other column are untouched byte for byte.
+7. **File ▸ Export Trees…** writes every tree in the cloud to a folder you
+   pick, one file per tree, named after the cloud (`plot_a.las` →
+   `plot_a_tree_7.las`) and in its format. Each file carries all of that
+   tree's points at full resolution — whole trees even from a downsampled
+   session — with every column and the file's own coordinates, so an exported
+   tree still lands in the right place in any other tool. Unassigned points
+   and anything dismissed as noise aren't trees and aren't written. Trees are
+   exported as the saved file has them, so segfix offers to save first.
 
 ## Layout
 
@@ -277,6 +285,7 @@ to the right edge of the 3D view, next to the points they act on.
 | `io.py` | whole-cloud load/save (binary PLY, LAS/LAZ), label-field and RGB-segmentation detection |
 | `operations.py` | pure, UI-agnostic label edits (reassign/split/unassign/noise) |
 | `analysis.py` | which trees touch which, by sampled point distance (KD-tree) |
+| `export.py` | File ▸ Export Trees…: one file per tree, full resolution, in the cloud's own format |
 | `density.py` | point-spacing measurement, voxel decimation, and the save-time interpolation back to full resolution |
 | `lasso.py` | 3D screen-space lasso (camera projection + polygon test) and the click-to-grow cluster tool |
 | `cloudview.py` | the vispy 3D canvas: camera, points, selection halo, tree box |

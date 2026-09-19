@@ -29,7 +29,9 @@ full-resolution point before writing, so the file keeps all of its points.
 from __future__ import annotations
 
 import os
+import re
 import shutil
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable
 
@@ -319,6 +321,33 @@ class _BaseCatalog:
 
     def _finalize_save(self, target: str, is_new_target: bool) -> None:
         """Hook after the in-place patch is flushed (e.g. re-export LAZ)."""
+
+    # -- export ------------------------------------------------------------
+    def file_labels(self) -> np.ndarray:
+        """Every point's label as the *file* currently holds it: full
+        resolution, and without edits that haven't been saved yet.
+
+        :attr:`labels` is the working set instead — the decimated subset on a
+        downsampled session, carrying unsaved edits. Export writes whole
+        trees out of the file, so it asks the file.
+        """
+        labels, _colors = self._decode_labels(self._mm)
+        return np.asarray(labels).astype(np.int32)
+
+    def has_unsaved_edits(self) -> bool:
+        """Whether any label has changed since the file was last written."""
+        return bool(np.any(self.labels != self._original_labels))
+
+    def subset_writer(self):
+        """A context manager yielding ``write(rows, dest)``, which writes the
+        file rows ``rows`` to ``dest`` as a file of the same format, keeping
+        every field and the file's own (unshifted) coordinates.
+
+        Whatever is expensive to set up — the PLY header, laspy's read of a
+        LAS — is done once for the whole ``with`` block, so exporting a
+        thousand trees reads the cloud once, not a thousand times.
+        """
+        raise NotImplementedError  # pragma: no cover - abstract
 
     # -- grouping index --------------------------------------------------
     def _build_index(self) -> None:
@@ -699,6 +728,24 @@ class TreeCatalog(_BaseCatalog):
             | sub[self._names["blue"]].astype(np.int64)
         )
 
+    @contextmanager
+    def subset_writer(self):
+        with open(self.path, "rb") as fh:
+            header = fh.read(self.offset)
+        _reject_extra_ply_elements(header)
+
+        def write(rows: np.ndarray, dest: str) -> None:
+            count = str(len(rows)).encode()
+            out_header = re.sub(
+                rb"(element[ \t]+vertex[ \t]+)\d+",
+                lambda m: m.group(1) + count, header, count=1,
+            )
+            with open(dest, "wb") as out:
+                out.write(out_header)
+                out.write(np.ascontiguousarray(self._mm[rows]).tobytes())
+
+        yield write
+
     def _colours_for(self, labels: np.ndarray) -> np.ndarray:
         colour = np.zeros((labels.size, 3), dtype=np.uint8)
         for lab in np.unique(labels):
@@ -789,6 +836,23 @@ class LasCatalog(_BaseCatalog):
             values = np.where(values == NOISE, UNASSIGNED, values)
         out[self.label_field][changed] = values.astype(self.dtype[self.label_field])
 
+    @contextmanager
+    def subset_writer(self):
+        import laspy
+
+        las = laspy.read(self.path)
+
+        def write(rows: np.ndarray, dest: str) -> None:
+            # laspy recomputes the point count and the extents from the
+            # points it is given, and carries the header's scales, offsets,
+            # CRS and Extra-Bytes layout over unchanged.
+            laspy.LasData(header=las.header, points=las.points[rows]).write(dest)
+
+        try:
+            yield write
+        finally:
+            del las
+
     def _finalize_save(self, target: str, is_new_target: bool) -> None:
         laz = _laz_export_path(self.path, target)
         if laz is None:
@@ -796,6 +860,20 @@ class LasCatalog(_BaseCatalog):
         import laspy
 
         laspy.read(target).write(laz)
+
+
+def _reject_extra_ply_elements(header: bytes) -> None:
+    """Refuse a PLY whose header declares more than the vertex element (a
+    mesh's faces, say): only vertex rows are copied, so the exported file's
+    header would promise data that isn't there."""
+    for line in header.splitlines():
+        parts = line.decode("ascii", "replace").split()
+        if len(parts) >= 3 and parts[0] == "element" and parts[1] != "vertex":
+            if int(parts[2]) > 0:
+                raise ValueError(
+                    f"this PLY also contains '{parts[1]}' data, which a "
+                    "per-tree export can't carry"
+                )
 
 
 def _laz_export_path(source_las: str, target_las: str) -> str | None:

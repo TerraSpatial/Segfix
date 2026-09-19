@@ -254,7 +254,54 @@ def _open_project(win, panel) -> None:
     )
 
 
-def _build_menus(win, panel) -> None:
+def _export_trees(win, panel, catalog) -> None:
+    """Menu "Export Trees…": write every tree in the cloud as its own file,
+    at full resolution and in the cloud's own format (see :mod:`export`)."""
+    import os
+
+    from qtpy.QtWidgets import QFileDialog, QMessageBox
+
+    from . import export
+    from .progress_ui import progress_window
+
+    if catalog.has_unsaved_edits():
+        answer = QMessageBox.question(
+            win,
+            "Export trees",
+            "Trees are exported as the saved file has them, so edits you "
+            "haven't saved won't be in them.\n\nSave them first?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.No
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if answer == QMessageBox.StandardButton.Cancel:
+            return
+        if answer == QMessageBox.StandardButton.Save:
+            panel.on_save()
+
+    out_dir = QFileDialog.getExistingDirectory(
+        win, "Export every tree into this folder", os.path.dirname(catalog.path)
+    )
+    if not out_dir:
+        return
+    try:
+        with progress_window(
+            win, "Exporting trees",
+            f"{len(catalog.records)} trees from {os.path.basename(catalog.path)}",
+        ) as report:
+            written = export.export_trees(catalog, out_dir, progress=report.report)
+    except Exception as exc:
+        QMessageBox.critical(win, "Export failed", str(exc))
+        return
+    panel.c.view.status = f"Exported {len(written)} tree(s) to {out_dir}"
+    QMessageBox.information(
+        win, "Export finished",
+        f"Wrote {len(written)} file(s) to\n{out_dir}",
+    )
+
+
+def _build_menus(win, panel, catalog=None) -> None:
     """Window menu bar: File (open/save the project), Edit (undo/redo — the
     former "Session" panel box), Preferences (colour theme), Help (about)."""
     from qtpy.QtGui import QActionGroup
@@ -271,6 +318,9 @@ def _build_menus(win, panel) -> None:
     save_act = file_menu.addAction("Save Project")
     save_act.setShortcut("Ctrl+S")
     save_act.triggered.connect(panel.on_save)
+    if catalog is not None:
+        export_act = file_menu.addAction("Export Trees…")
+        export_act.triggered.connect(lambda: _export_trees(win, panel, catalog))
 
     edit_menu = bar.addMenu("&Edit")
     undo_act = edit_menu.addAction("Undo")
@@ -467,7 +517,7 @@ def _run_scene(args) -> int:
     )
     win.resizeDocks([right_dock], [440], Qt.Orientation.Horizontal)
     panel.size_spin.setValue(args.point_size)
-    _build_menus(win, panel)
+    _build_menus(win, panel, catalog)
     bind_shortcuts(win, panel)
 
     decimated = (

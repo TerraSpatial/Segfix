@@ -17,7 +17,7 @@ clouds. Click to watch:
 
 [![Watch the segfix walkthrough](https://raw.githubusercontent.com/tim-devereux/segfix/main/docs/walkthrough.jpg)](https://github.com/tim-devereux/segfix/releases/download/v1.0.0/segfix_walkthrough.mp4)
 
-Testing is done on Fedora Linux 44 and Windows 11. macOS should work but has not been tested.
+Testing is done on Fedora Linux 44, Windows 11 and macOS.
 
 ## Contributing
 

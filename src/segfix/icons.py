@@ -26,8 +26,12 @@ BLUE = QColor("#7fb3e0")
 AMBER = QColor("#e0c060")
 
 
-def _pen(color=FG, width=2.4, dashed=False) -> QPen:
-    pen = QPen(color)
+def _pen(color=None, width=2.4, dashed=False) -> QPen:
+    # `color=None` rather than `color=FG`: a default argument binds at import,
+    # which would pin the neutral stroke for the life of the process. Looking
+    # FG up per call lets a caller re-point it — what scripts/export_icons.py
+    # does to render the same shapes for a light background.
+    pen = QPen(FG if color is None else color)
     pen.setWidthF(width)
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
@@ -36,9 +40,9 @@ def _pen(color=FG, width=2.4, dashed=False) -> QPen:
     return pen
 
 
-def _arrowhead(p: QPainter, tip, left, right, color=FG) -> None:
+def _arrowhead(p: QPainter, tip, left, right, color=None) -> None:
     p.setPen(Qt.NoPen)
-    p.setBrush(color)
+    p.setBrush(FG if color is None else color)  # see _pen on the None default
     p.drawPolygon(QPolygonF([QPointF(*tip), QPointF(*left), QPointF(*right)]))
 
 

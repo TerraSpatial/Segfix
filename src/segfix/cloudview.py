@@ -36,6 +36,36 @@ VIEWS = {
 }
 
 
+def selection_mask(indices, size: int, base: np.ndarray | None = None):
+    """A boolean mask of ``indices`` over ``size`` points.
+
+    ``indices`` may be point indices (an array, set, or any sized iterable)
+    or a boolean mask of the right length already. ``base`` is an existing
+    mask to add to rather than replace, and is never modified.
+
+    A mask, not a set: a lasso can select millions of points, and every set
+    operation on that is a Python-level pass — building one, unioning it and
+    turning it back into an array to draw the halo came to about a quarter
+    of the time to complete a lasso, for tens of megabytes where a 3MB mask
+    says the same thing.
+    """
+    mask = (
+        base.copy()
+        if base is not None and base.shape[0] == size
+        else np.zeros(size, dtype=bool)
+    )
+    if isinstance(indices, np.ndarray) and indices.dtype == bool:
+        if indices.shape[0] == size:
+            mask |= indices
+        return mask
+    if not isinstance(indices, np.ndarray):
+        # A set or list — np.asarray would make a 0-d object array.
+        indices = np.fromiter(indices, dtype=np.int64, count=len(indices))
+    if indices.size:
+        mask[indices.astype(np.int64, copy=False)] = True
+    return mask
+
+
 class _CloudCompareCamera(TurntableCamera):
     """Turntable camera with CloudCompare's mouse map: left-drag orbits,
     right-drag pans, wheel zooms.
@@ -126,7 +156,7 @@ class CloudView:
         self._coords = np.empty((0, 3), np.float32)
         self._face_color = np.empty((0, 4), np.float32)
         self._shown = np.empty(0, dtype=bool)
-        self._selected: set[int] = set()
+        self._selected = np.zeros(0, dtype=bool)  # mask over _coords
         self._size = 3.0  # marker diameter in screen pixels
 
         #: fn(str) -> None, set by the shell to write the status bar
@@ -180,7 +210,7 @@ class CloudView:
             else np.empty((0, 4), np.float32)
         )
         self._shown = np.ones(len(self._coords), dtype=bool)
-        self._selected = set()
+        self._selected = np.zeros(len(self._coords), dtype=bool)
         self._redraw()
         self._redraw_highlight()
 
@@ -239,21 +269,51 @@ class CloudView:
         self.canvas.update()
 
     # -- selection ----------------------------------------------------
+    # Held as a boolean mask (see selection_mask). `select()` and
+    # `selected_mask` are the numpy path the tools use; `selected` stays for
+    # set algebra on small selections, and materialises a set each read.
     @property
     def selected(self) -> set[int]:
-        return self._selected
+        """The selected indices as a set — O(selection) to build, so prefer
+        :attr:`selected_mask` or :meth:`select` anywhere it could be big."""
+        return set(np.flatnonzero(self._selected).tolist())
 
     @selected.setter
     def selected(self, indices) -> None:
-        self._selected = {int(i) for i in indices}
+        self.select(indices)
+
+    @property
+    def selected_mask(self) -> np.ndarray:
+        """Boolean mask over :attr:`coords` of what is selected.
+
+        The live array, not a copy: take a ``.copy()`` before holding on to
+        it across a selection change.
+        """
+        return self._selected
+
+    def select(self, indices, additive: bool = False) -> int:
+        """Select ``indices``, replacing the selection or adding to it.
+
+        ``indices`` may be point indices (any array or iterable) or a
+        boolean mask the length of the cloud. Returns how many points are
+        selected afterwards, which every caller wants for the status line
+        and which is free here.
+        """
+        self._selected = selection_mask(
+            indices, len(self._coords), self._selected if additive else None
+        )
         self._redraw_highlight()
         if self.on_selection_changed is not None:
             self.on_selection_changed()
+        return int(np.count_nonzero(self._selected))
 
     def _redraw_highlight(self) -> None:
-        idx = np.fromiter(self._selected, dtype=np.int64)
-        if idx.size and len(self._shown) == len(self._coords):
-            idx = idx[self._shown[idx]]
+        mask = self._selected
+        if mask.shape[0] != len(self._coords):
+            mask = np.zeros(len(self._coords), dtype=bool)
+        if len(self._shown) == len(self._coords):
+            mask = mask & self._shown
+        idx = np.flatnonzero(mask)
         if idx.size == 0:
             self.highlight.visible = False
             self.canvas.update()
@@ -318,8 +378,45 @@ class CloudView:
         cam.center = tuple(float(c) for c in center_xyz)
         cam.scale_factor = max(float(span), 0.5) * 1.6
 
+    #: The ViewBox events a camera listens to for navigation. Disconnecting
+    #: these is how a selection tool takes the mouse away from it.
+    _CAMERA_MOUSE_EVENTS = (
+        "mouse_press", "mouse_release", "mouse_move",
+        "mouse_wheel", "gesture_zoom", "gesture_rotate",
+    )
+
     def set_camera_interactive(self, on: bool) -> None:
-        self.view.camera.interactive = bool(on)
+        """Hand the mouse to the camera, or take it away for a tool.
+
+        ``camera.interactive = False`` looks like it should do this, and is
+        what this used to do on its own, but in vispy 0.16 that property is
+        write-only — nothing in the library ever reads ``_interactive``. So
+        the camera kept navigating throughout a lasso. It was not obvious
+        because of how the event reaches it: the canvas emitter runs every
+        callback regardless of ``event.handled`` (only ``blocked`` stops it),
+        so after the lasso recorded a drag, SceneCanvas._process_mouse_event
+        ran anyway and passed the same drag down the scene graph. That starts
+        with ``visual_at(event.pos)``, so a drag begun over empty background
+        picked nothing and behaved, while one begun on top of the cloud
+        walked up to the ViewBox and orbited the view mid-lasso.
+
+        Disconnecting the camera's own handler from the ViewBox is what
+        actually stops it, and it covers the wheel and the right-drag pan
+        too, which no selection tool ever looked at. ``interactive`` is still
+        set, because :meth:`_on_double_click` reads it as our own flag.
+        """
+        camera = self.view.camera
+        camera.interactive = bool(on)
+        for name in self._CAMERA_MOUSE_EVENTS:
+            emitter = getattr(self.view.events, name, None)
+            if emitter is None:  # pragma: no cover - vispy gained/lost one
+                continue
+            try:
+                emitter.disconnect(camera.viewbox_mouse_event)
+            except (ValueError, TypeError):
+                pass
+            if on:
+                emitter.connect(camera.viewbox_mouse_event)
 
     # -- lasso support ------------------------------------------------
     @property
@@ -337,12 +434,75 @@ class CloudView:
         Returns ``(xy, valid)`` — ``xy`` is ``(N, 2)`` and ``valid`` masks out
         points behind the camera (non-positive homogeneous w).
         """
+        xy, _, valid = self._project(coords, with_depth=False)
+        return xy, valid
+
+    def _canvas_matrix(self):
+        """The visual→canvas transform as ``(origin, linear, base)``, where
+        ``(p - origin) @ linear + base`` is the homogeneous canvas position
+        of a world point ``p``.
+
+        ``markers.get_transform()`` hands back three nested ChainTransforms,
+        and ``.map()`` walks them one at a time — every level allocating and
+        touching its own full ``(N, 4)`` array, so a lasso paid six or seven
+        passes over the cloud for what is one linear map. Every transform in
+        the chain is linear in homogeneous coordinates, so mapping a point
+        and its three unit offsets recovers the composite, and one matmul
+        then replaces the walk.
+
+        The probe sits at the camera's pivot rather than at the world origin,
+        and the result stays relative to it. A recovered column is a
+        difference of two mapped points, and on a cloud left in UTM
+        coordinates the world origin maps millions of pixels off screen —
+        differencing two such numbers cancels away most of their significant
+        digits, which measured as a 0.66 pixel error in the projection.
+        Probing at the pivot keeps both mapped points on or near the canvas,
+        where the same subtraction costs nothing. Subtracting the origin from
+        the cloud is free: it replaces the float32→float64 promotion the
+        matmul needed anyway.
+
+        Rebuilt per call rather than cached: it costs four mapped points, and
+        anything cached would have to be invalidated on every camera move.
+        """
         tr = self.markers.get_transform(map_from="visual", map_to="canvas")
-        mapped = np.asarray(tr.map(np.asarray(coords, dtype=np.float64)))
-        w = mapped[:, 3]
+        origin = np.asarray(self.view.camera.center, dtype=np.float64)
+        probe = origin + np.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        )
+        mapped = np.asarray(tr.map(probe), dtype=np.float64)
+        base = mapped[0]
+        return origin, mapped[1:] - base, base
+
+    def _project(self, coords: np.ndarray, with_depth: bool):
+        """``coords`` to canvas pixels, as ``(xy, depth, valid)``.
+
+        ``depth`` is None unless asked for. Only the columns wanted are
+        computed — a quarter to a half less work than mapping all four — and
+        the projection is the single largest cost of completing a lasso.
+        """
+        origin, linear, base = self._canvas_matrix()
+        # Orthographic — which is what the app runs (the camera is built
+        # fov=0). w is then the constant 1, so there is no perspective divide
+        # to do and no point can be behind the camera: leave the w column out
+        # and every division with it. Decided from the matrix rather than
+        # from the camera, so a perspective fov still takes the slow path.
+        affine = not linear[:, 3].any() and base[3] == 1.0
+        columns = [0, 1] + ([2] if with_depth else []) + ([] if affine else [3])
+
+        # Relative to the same origin the matrix was probed at, and promoted
+        # to float64 in the same pass the matmul needed anyway.
+        local = np.subtract(coords, origin, dtype=np.float64)
+        out = local @ np.ascontiguousarray(linear[:, columns])
+        out += base[columns]
+
+        if affine:
+            valid = np.ones(len(out), dtype=bool)
+            return out[:, :2], (out[:, 2] if with_depth else None), valid
+        w = out[:, -1]
         valid = w > 0
         w_safe = np.where(valid, w, 1.0)
-        return mapped[:, :2] / w_safe[:, None], valid
+        depth = out[:, 2] / w_safe if with_depth else None
+        return out[:, :2] / w_safe[:, None], depth, valid
 
     def pick_point(self, click_xy, radius: float = 9.0) -> int | None:
         """Index of the point under ``click_xy`` (canvas pixels), or ``None``.
@@ -354,13 +514,10 @@ class CloudView:
         """
         if len(self._coords) == 0:
             return None
-        tr = self.markers.get_transform(map_from="visual", map_to="canvas")
-        m = np.asarray(tr.map(self._coords.astype(np.float64)))
-        w = m[:, 3]
-        valid = w > 0
-        ws = np.where(valid, w, 1.0)
-        xy = m[:, :2] / ws[:, None]
-        depth = m[:, 2] / ws
+        # Same collapsed projection as the lasso: a click used to walk the
+        # whole cloud through the transform chain, so every cluster-tool
+        # click cost what a completed lasso did.
+        xy, depth, valid = self._project(self._coords, with_depth=True)
         shown = (
             self._shown if len(self._shown) == len(self._coords)
             else np.ones(len(self._coords), bool)

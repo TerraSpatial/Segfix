@@ -91,26 +91,36 @@ class SegFixController:
         # selection — see _on_lasso. Also a mode choice, not per-cloud state.
         self.on_lasso_section = None
         # Cluster-tool caches, all keyed to the current point array and
-        # dropped in set_cloud: the measured point spacing, and per-tree
-        # connected-component labellings (built once per tree the first time
-        # it's clicked, and again whenever the gap changes).
+        # dropped in set_cloud: the measured point spacing, and the
+        # connected-component labellings, one per tree and gap, each built
+        # the first time that combination is asked for and kept thereafter.
         self._cluster_spacing: float | None = None
-        self._cluster_cc: dict[int, tuple] = {}
+        #: (tree label, gap) -> (point indices, component id per index)
+        self._cluster_cc: dict[tuple[int, float], tuple] = {}
         # How many point spacings of empty space a cluster click bridges; the
         # panel's "Cluster gap" popover sets it. A mode choice like
         # lasso_filter, so it survives set_cloud.
         self.cluster_gap_factor = DEFAULT_CLUSTER_GAP_FACTOR
         self.lasso = LassoTool(view, self._on_lasso)
         self.cluster = ClusterTool(view, self._grow_cluster, self._on_cluster)
+        #: The tree this cloud was loaded for, if it was loaded for one; see
+        #: set_cloud. None when the whole file is the scene.
+        self.focus_label: int | None = None
 
-    def set_cloud(self, cloud: PointCloud) -> None:
+    def set_cloud(self, cloud: PointCloud, focus: int | None = None) -> None:
         """Re-point the controller at a freshly loaded cloud (the view has
-        already been handed the new points by the caller)."""
+        already been handed the new points by the caller).
+
+        ``focus`` is the tree the cloud was loaded *for* — the one picked in
+        the All Trees table, as opposed to the neighbours that came with it.
+        The panel starts its review on that tree rather than on nothing.
+        """
         was_lasso, was_cluster = self.lasso.armed, self.cluster.armed
         self.lasso.set_armed(False)
         self.cluster.set_armed(False)
         self._cluster_spacing, self._cluster_cc = None, {}  # for the old points
         self.cloud = cloud
+        self.focus_label = focus
         self.save_path = cloud.source_path
         self.faded_ids = set()  # a fresh cloud starts with nothing faded
         if was_lasso:
@@ -126,10 +136,8 @@ class SegFixController:
             return
         if self.lasso_filter is not None:
             indices = self.lasso_filter(indices)
-        current = set(self.view.selected) if additive else set()
-        current.update(int(i) for i in indices)
-        self.view.selected = current
-        self.view.status = f"Lasso selected {len(current)} points"
+        total = self.view.select(indices, additive=additive)
+        self.view.status = f"Lasso selected {total} points"
 
     @property
     def cluster_gap(self) -> float:
@@ -151,7 +159,6 @@ class SegFixController:
         if factor == self.cluster_gap_factor:
             return False
         self.cluster_gap_factor = factor
-        self._cluster_cc = {}  # every cached labelling was built at the old gap
         return self.cluster.reapply()
 
     def reset_cluster_gap(self) -> None:
@@ -165,10 +172,19 @@ class SegFixController:
 
     def _cluster_component(self, seed_label: int, gap: float):
         """(sorted point indices, component-id per index) for one tree's
-        ``gap``-connected blobs — computed once per tree, then cached."""
+        ``gap``-connected blobs — computed once per tree and gap, then cached.
+
+        Keyed on the gap as well as the tree, because the workflow this
+        serves walks up and down the gap steps: clicking the same spot again
+        loosens it, [ and ] step either way, and the slider can land back
+        where it was. Wiping the cache whenever the gap moved meant every one
+        of those recomputed the whole tree's blobs from scratch — seconds
+        each, and the same answer as two clicks ago.
+        """
         from . import analysis
 
-        cached = self._cluster_cc.get(seed_label)
+        key = (seed_label, float(gap))
+        cached = self._cluster_cc.get(key)
         if cached is None:
             same = np.flatnonzero(self.cloud.labels == seed_label)
             comp = (
@@ -176,7 +192,7 @@ class SegFixController:
                 if same.size else np.empty(0, np.int64)
             )
             cached = (same, comp)
-            self._cluster_cc[seed_label] = cached
+            self._cluster_cc[key] = cached
         return cached
 
     def _grow_cluster(self, seed: int) -> np.ndarray:
@@ -201,16 +217,14 @@ class SegFixController:
         return idx
 
     def _on_cluster(self, indices: np.ndarray, additive: bool) -> None:
-        current = set(self.view.selected) if additive else set()
-        current.update(int(i) for i in indices)
-        self.view.selected = current
+        total = self.view.select(indices, additive=additive)
         self.view.status = (
-            f"Cluster selected {len(current)} points at "
+            f"Cluster selected {total} points at "
             f"{self.cluster_gap_factor:g}× spacing - click again to loosen"
         )
 
     def selected_indices(self) -> np.ndarray:
-        return np.fromiter(self.view.selected, dtype=np.int64)
+        return np.flatnonzero(self.view.selected_mask)
 
     def _after_edit(self, message: str) -> None:
         # Recolour only the points whose label just moved (the op records them
@@ -969,7 +983,13 @@ class SegFixWidget(QWidget):
 
     def _on_cloud_changed(self) -> None:
         """A new cloud was loaded: reset per-cloud state, re-hook."""
-        self.current = None
+        # Start the review on the tree this scene was loaded for. Picking a
+        # tree in the All Trees table used to load it with its neighbours and
+        # then review none of them, so the first thing to do with a freshly
+        # opened tree was to find it in the panel's own table and click it
+        # again. _refresh_tree_table -> _sync_current selects its row from
+        # here, once the table it has to select in exists.
+        self.current = self.c.focus_label
         self.hidden_ids = set()
         # A slab computed for the previous cloud's coordinate space doesn't
         # carry over; turn the tool off and recompute its range for this one.

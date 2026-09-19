@@ -19,6 +19,7 @@ import pytest
 
 pytest.importorskip("qtpy")
 
+from segfix.cloudview import selection_mask  # noqa: E402
 from segfix.model import PointCloud  # noqa: E402
 from segfix.widgets import (  # noqa: E402
     CLUSTER_GAP_FACTORS,
@@ -38,6 +39,42 @@ B_IDX = set(range(_BLOB, 2 * _BLOB))
 OTHER_IDX = 2 * _BLOB
 
 
+class _FakeView:
+    """Stand-in for CloudView: the selection API the controller and
+    ClusterTool actually touch, over the same mask helper the real view
+    uses, and no GL anywhere.
+    """
+
+    def __init__(self, coords):
+        self.canvas = types.SimpleNamespace()
+        self.native = None
+        self.coords = coords
+        self.shown = np.ones(len(coords), dtype=bool)
+        self.status = ""
+        self._mask = np.zeros(len(coords), dtype=bool)
+
+    def pick_point(self, xy):
+        return 0  # every click lands on blob A's first point
+
+    @property
+    def selected(self):
+        return set(np.flatnonzero(self._mask).tolist())
+
+    @selected.setter
+    def selected(self, indices):
+        self.select(indices)
+
+    @property
+    def selected_mask(self):
+        return self._mask
+
+    def select(self, indices, additive=False):
+        self._mask = selection_mask(
+            indices, len(self.coords), self._mask if additive else None
+        )
+        return int(np.count_nonzero(self._mask))
+
+
 def _controller(factor=4.0):
     """A controller over the two-blob tree. ``factor`` pins the gap (4x by
     default: at the 1x default even blob A falls apart, since a median
@@ -45,15 +82,7 @@ def _controller(factor=4.0):
     coords = np.vstack([_A, _B, _OTHER]).astype(np.float32)
     labels = np.array([1] * (2 * _BLOB) + [2], dtype=np.int32)
     cloud = PointCloud(coords=coords, labels=labels)
-    view = types.SimpleNamespace(
-        canvas=types.SimpleNamespace(),
-        native=None,
-        coords=coords,
-        shown=np.ones(len(coords), dtype=bool),
-        selected=set(),
-        status="",
-        pick_point=lambda xy: 0,  # every click lands on blob A's first point
-    )
+    view = _FakeView(coords)
     ctrl = SegFixController(view, cloud)
     # Bypass set_armed(): it would hook real canvas events.
     ctrl.cluster._armed = True
@@ -238,3 +267,28 @@ def test_reset_ends_the_click_sequence():
 def test_gap_steps_are_ordered_and_include_the_default():
     assert list(CLUSTER_GAP_FACTORS) == sorted(CLUSTER_GAP_FACTORS)
     assert DEFAULT_CLUSTER_GAP_FACTOR in CLUSTER_GAP_FACTORS
+
+
+def test_the_component_cache_survives_a_gap_change(monkeypatch):
+    """Stepping the gap up and back must not recompute a labelling it has
+    already built: the workflow is "click again to loosen", and each step
+    used to wipe the cache and redo the whole tree's blobs."""
+    from segfix import analysis
+
+    ctrl, _ = _controller()
+    calls = []
+    real = analysis.connected_components_within
+
+    def counted(coords, eps):
+        calls.append(float(eps))
+        return real(coords, eps)
+
+    monkeypatch.setattr(analysis, "connected_components_within", counted)
+
+    _click(ctrl)
+    assert len(calls) == 1
+    _step_looser(ctrl)()                    # a new gap: one more computation
+    assert len(calls) == 2
+    ctrl.set_cluster_gap_factor(4.0)        # back to the gap of the first click
+    assert len(calls) == 2                  # answered from the cache
+    assert len(ctrl._cluster_cc) == 2       # one entry per (tree, gap)

@@ -25,12 +25,48 @@ from qtpy.QtWidgets import QWidget
 
 
 # -- geometry -----------------------------------------------------------
+#: Scanline rows are grouped with a 16-bit key so numpy stable-sorts them
+#: with a radix pass instead of a comparison sort. Past this many rows the
+#: key would not fit and the exact-y sort is used instead -- no canvas is
+#: that tall, but a projection can put a stray vertex a long way off it.
+_MAX_ROWS = 32767
+
+
+def _group_by_row(polygon: np.ndarray, ys: np.ndarray):
+    """Order ``ys`` by whole scanline row, plus where each row starts.
+
+    Returns ``(order, starts, y0)``, or ``None`` when the outline spans too
+    many rows for the 16-bit key.
+
+    Grouping by ``int(y)`` rather than by y itself is what makes this cheap:
+    ``np.argsort(..., kind="stable")`` radix-sorts an int16 key and
+    comparison-sorts anything wider, which on 2.2M candidate points measured
+    43ms against 550ms for the float64 sort the exact ordering needs. An
+    edge's band then covers whole rows, and only the two rows at its ends
+    hold points that may fall outside it -- so the band test below still
+    decides every point on its real y, and the answer is unchanged.
+    """
+    py = polygon[:, 1]
+    y0 = float(np.floor(py.min()))
+    rows = int(np.floor(py.max()) - y0) + 1
+    if rows > _MAX_ROWS:
+        return None
+    # Callers have already dropped everything outside the outline's bounding
+    # box, so every y lands in [y0, y0 + rows).
+    row = (ys - y0).astype(np.int16)
+    np.clip(row, 0, rows - 1, out=row)
+    order = np.argsort(row, kind="stable")
+    starts = np.zeros(rows + 1, dtype=np.int64)
+    np.cumsum(np.bincount(row, minlength=rows), out=starts[1:])
+    return order, starts, y0
+
+
 def _crossings(polygon: np.ndarray, pts: np.ndarray) -> np.ndarray:
     """Even-odd ray test over ``pts``, one edge at a time.
 
     An edge can only be crossed by points whose y lies in that edge's own y
-    span, so sorting the points by y once lets each edge do its arithmetic on
-    just the contiguous slice it can possibly affect. Summed over a closed
+    span, so grouping the points by y once lets each edge do its arithmetic
+    on just the contiguous slice it can possibly affect. Summed over a closed
     outline those slices come to roughly two passes over the points however
     many vertices there are, in place of the vertices x points the
     expression-per-edge version does over the whole array.
@@ -44,35 +80,53 @@ def _crossings(polygon: np.ndarray, pts: np.ndarray) -> np.ndarray:
     """
     n = len(pts)
     inside = np.zeros(n, dtype=bool)
-    # Sorted by y, so each edge's band is a slice rather than a scatter.
-    order = np.argsort(pts[:, 1], kind="stable")
+    grouped = _group_by_row(polygon, pts[:, 1])
+    if grouped is None:  # pragma: no cover - needs a 32k-row outline
+        order = np.argsort(pts[:, 1], kind="stable")
+        starts = y0 = None
+    else:
+        order, starts, y0 = grouped
     xs = np.ascontiguousarray(pts[order, 0])
     ys = np.ascontiguousarray(pts[order, 1])
-    hit = np.zeros(n, dtype=bool)
 
     x1, y1 = polygon[:, 0], polygon[:, 1]
     x2, y2 = np.roll(x1, -1), np.roll(y1, -1)
 
     for ex1, ey1, ex2, ey2 in zip(x1, y1, x2, y2):
         # `(ey1 > y) != (ey2 > y)` is true for exactly min <= y < max, either
-        # way the edge runs; a horizontal edge spans nothing and is skipped,
-        # which is also what makes the zero-denominator guard unnecessary.
+        # way the edge runs. A horizontal edge spans nothing, so it crosses
+        # no ray -- skipping it here is also what lets the x below divide by
+        # the edge's height without guarding it.
+        if ey1 == ey2:
+            continue
         ylo, yhi = (ey1, ey2) if ey1 < ey2 else (ey2, ey1)
-        lo = int(np.searchsorted(ys, ylo, side="left"))
-        hi = int(np.searchsorted(ys, yhi, side="left"))
+        if starts is None:  # pragma: no cover - the fallback above
+            lo = int(np.searchsorted(ys, ylo, side="left"))
+            hi = int(np.searchsorted(ys, yhi, side="left"))
+        else:
+            # Every row the band touches, ends included; the slice is a
+            # superset of the band, which `band` below trims to size.
+            lo = int(starts[int(ylo - y0)])
+            hi = int(starts[int(yhi - y0) + 1])
         if lo >= hi:
             continue
+        span_y = ys[lo:hi]
         # x of the edge at each of those heights; the ray crosses when the
         # point sits left of it. Multiply before dividing, so a point sitting
         # exactly on an edge rounds the same way it did when this was one
         # expression -- folding the two constants into a single factor first
         # is a different rounding, and flips such a point in or out.
-        x_cross = ys[lo:hi] - ey1
+        x_cross = span_y - ey1
         x_cross *= ex2 - ex1
         x_cross /= ey2 - ey1
         x_cross += ex1
-        band = hit[lo:hi]
-        np.less(xs[lo:hi], x_cross, out=band)
+        band = xs[lo:hi] < x_cross
+        if starts is not None:
+            # Trim the two end rows back to the edge's real span. The exact-y
+            # ordering needs no such step, which is the whole of what the
+            # cheaper key costs.
+            band &= span_y >= ylo
+            band &= span_y < yhi
         np.not_equal(inside[lo:hi], band, out=inside[lo:hi])  # flip on crossing
 
     out = np.empty(n, dtype=bool)
@@ -442,7 +496,10 @@ class ClusterTool:
         # What the patch is added to: kept on the chain so reapply() can
         # rebuild the selection from scratch -- a patch that has to be able to
         # shrink can't be layered on a selection that already contains it.
-        base = set(self.view.selected) if additive else set()
+        # A copy of the mask, not the live one: reapply() rebuilds the
+        # selection from what the click was added to, so it has to survive
+        # the selection changing under it.
+        base = self.view.selected_mask.copy() if additive else None
         indices = self.grow(seed)
         self._chain = {
             "seed": seed,
@@ -470,10 +527,10 @@ class ClusterTool:
         if not self._armed or ch is None:
             return False
         indices = self.grow(ch["seed"])
-        if ch["base"]:
-            indices = np.union1d(
-                np.fromiter(ch["base"], dtype=np.int64, count=len(ch["base"])),
-                indices,
-            )
+        base = ch["base"]
+        if base is not None and base.any():
+            merged = base.copy()
+            merged[indices] = True
+            indices = merged
         self.on_select(indices, additive=False)
         return True

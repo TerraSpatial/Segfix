@@ -7,7 +7,6 @@ session was doing (downsampled, globally shifted) and whatever is unsaved.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -263,15 +262,17 @@ def test_the_menu_handler_saves_first_then_writes_every_tree(tmp_path, monkeypat
     monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
     monkeypatch.setattr(QFileDialog, "getExistingDirectory",
                         lambda *a, **k: str(out))
-    # The handler imports the progress window itself, so patch it at source;
-    # with the dialogs faked too, the test needs no QApplication.
+    # The handler imports the runner itself, so patch it at source: this
+    # test is about save-then-export, not about the worker thread, and
+    # standing in for the runner keeps it free of a QApplication.
     from segfix import progress_ui
 
-    @contextmanager
-    def _no_window(*a, **k):
-        yield type("R", (), {"report": staticmethod(lambda *args: None)})()
-
-    monkeypatch.setattr(progress_ui, "progress_window", _no_window)
+    monkeypatch.setattr(
+        progress_ui, "run_with_progress",
+        lambda parent, title, detail, work: work(
+            lambda *a: None, lambda fn, *args: fn(*args)
+        ),
+    )
 
     app._export_trees(None, _Panel(), cat)
 

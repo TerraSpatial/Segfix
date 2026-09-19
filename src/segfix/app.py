@@ -113,8 +113,37 @@ def _prefer_discrete_gpu_windows() -> None:
         winreg.CloseKey(key)
 
 
+def _disable_window_ghosting() -> None:
+    """Stop Windows replacing a busy window with a grey "ghost".
+
+    When a top-level window goes about five seconds without pumping its
+    message queue, Windows hides it behind a stand-in of its own: the title
+    gains "(Not Responding)", the contents wash out, and a click offers to
+    close the program. The work is fine — it is the stand-in that reads as a
+    crash.
+
+    Most of that is answered by running the long operations on a worker
+    thread (:func:`segfix.progress_ui.run_with_progress`), which keeps the
+    queue pumped. This covers what is left: a stretch of GIL-bound Python, a
+    driver call inside a repaint, or the moments before the worker exists.
+    The window then simply holds its last painted frame — which, during a
+    load, is the progress bar naming the phase it is on.
+
+    Windows only, and best-effort: failing to disable it costs nothing.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.DisableProcessWindowsGhosting()
+    except Exception:
+        pass
+
+
 def main(argv=None) -> int:
     _prefer_discrete_gpu()
+    _disable_window_ghosting()
     parser = argparse.ArgumentParser(
         prog="segfix",
         description="GUI tool to fix tree point-cloud instance segmentation.",
@@ -262,7 +291,7 @@ def _export_trees(win, panel, catalog) -> None:
     from qtpy.QtWidgets import QFileDialog, QMessageBox
 
     from . import export
-    from .progress_ui import progress_window
+    from .progress_ui import run_with_progress
 
     if catalog.has_unsaved_edits():
         answer = QMessageBox.question(
@@ -286,11 +315,13 @@ def _export_trees(win, panel, catalog) -> None:
     if not out_dir:
         return
     try:
-        with progress_window(
+        written = run_with_progress(
             win, "Exporting trees",
             f"{len(catalog.records)} trees from {os.path.basename(catalog.path)}",
-        ) as report:
-            written = export.export_trees(catalog, out_dir, progress=report.report)
+            lambda report, ask: export.export_trees(
+                catalog, out_dir, progress=report
+            ),
+        )
     except Exception as exc:
         QMessageBox.critical(win, "Export failed", str(exc))
         return
@@ -399,7 +430,7 @@ def _run_scene(args) -> int:
     from .icons import app_icon
     from .model import PointCloud
     from .overlays import ScaleBarOverlay
-    from .progress_ui import progress_window
+    from .progress_ui import run_with_progress
     from .scene_ui import SceneController, SceneWidget
     from .shift_ui import prompt_global_shift
     from .treecatalog import open_catalog
@@ -461,30 +492,27 @@ def _run_scene(args) -> int:
     win.showMaximized()
     busy(view, f"Scanning trees in {args.cloud}…")
 
-    # Both prompts run from inside the load, so each one steps out of the
-    # progress window's way first — a bar sitting frozen at 10% behind a
-    # question reads as a hang, which is the impression this whole window
-    # exists to dispel.
-    def _ask(dialog, *dialog_args):
-        loading.pause()
-        try:
-            return dialog(win, *dialog_args)
-        finally:
-            loading.resume()
+    # The load runs on a worker thread (see run_with_progress): on the GUI
+    # thread each phase is one uninterrupted numpy call, and Windows calls a
+    # window that hasn't pumped its message queue for five seconds "(Not
+    # Responding)". Both prompts are raised from inside the load, so they go
+    # back across to the GUI thread through `ask` — which also steps the bar
+    # out of their way, since one frozen behind a question reads as a hang.
+    def _open(report, ask):
+        return open_catalog(
+            args.cloud,
+            label_field=args.label_field,
+            shift_prompt=lambda mins, maxs, suggested:
+                ask(prompt_global_shift, win, mins, maxs, suggested),
+            density_prompt=lambda spacing, n_points, suggested:
+                ask(prompt_downsample, win, spacing, n_points, suggested),
+            progress=report,
+        )
 
     try:
-        with progress_window(
-            win, "Opening cloud", os.path.basename(args.cloud)
-        ) as loading:
-            catalog = open_catalog(
-                args.cloud,
-                label_field=args.label_field,
-                shift_prompt=lambda mins, maxs, suggested:
-                    _ask(prompt_global_shift, mins, maxs, suggested),
-                density_prompt=lambda spacing, n_points, suggested:
-                    _ask(prompt_downsample, spacing, n_points, suggested),
-                progress=loading.report,
-            )
+        catalog = run_with_progress(
+            win, "Opening cloud", os.path.basename(args.cloud), _open
+        )
     except Exception as exc:
         # A wrong/corrupt file used to raise this far with the window already
         # shown maximized and app.exec() not yet reached — no event loop was

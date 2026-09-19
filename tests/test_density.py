@@ -605,3 +605,100 @@ def test_whole_class_moves_needs_every_point_moved_the_same_way():
     assert density.whole_class_moves(codes, before, after) == {7: -1}
     split = np.array([3, 3, 4, 8, 8, 0, 0])      # 7 moved, but to two labels
     assert 7 not in density.whole_class_moves(codes, before, split)
+
+
+# -- reopening a project -----------------------------------------------------
+def _project(tmp_path, name="proj"):
+    """A dense cloud imported into a real workspace, so the manifest exists."""
+    from segfix import workspace
+
+    path, _, _ = _dense_plot(tmp_path)
+    return workspace.create_workspace(path, tmp_path / name)
+
+
+def test_reopening_does_not_ask_the_downsample_question_again(tmp_path):
+    """The voxel size is a decision about the project, not about this
+    session; re-asking it every open was the thing to fix."""
+    data = _project(tmp_path)
+    asked = []
+
+    def prompt(spacing, n_points, suggested):
+        asked.append(suggested)
+        return suggested
+
+    first = open_catalog(str(data), density_prompt=prompt)
+    assert len(asked) == 1 and first.is_decimated
+
+    again = open_catalog(str(data), density_prompt=prompt)
+
+    assert len(asked) == 1                      # not asked a second time
+    assert again.is_decimated
+    assert again.voxel_size == first.voxel_size
+    assert again.working_count == first.working_count
+    np.testing.assert_array_equal(again._sub_idx, first._sub_idx)
+
+
+def test_declining_is_remembered_so_it_is_not_re_offered(tmp_path):
+    data = _project(tmp_path)
+    asked = []
+
+    def decline(spacing, n_points, suggested):
+        asked.append(suggested)
+        return None
+
+    assert not open_catalog(str(data), density_prompt=decline).is_decimated
+    assert len(asked) == 1
+
+    again = open_catalog(str(data), density_prompt=decline)
+
+    assert len(asked) == 1
+    assert not again.is_decimated
+    assert again.working_count == again.count
+
+
+def test_the_measured_spacing_is_remembered_too(tmp_path):
+    from segfix import workspace
+
+    data = _project(tmp_path)
+    cat = open_catalog(str(data), density_prompt=lambda *a: a[2])
+    settings = workspace.settings(data)
+    assert settings["spacing"] == pytest.approx(cat.spacing)
+    assert settings["voxel_size"] == cat.voxel_size
+
+
+def test_a_replaced_data_file_recomputes_instead_of_reusing_the_cache(tmp_path):
+    """The kept rows are cached against the file's bytes. Swap the file and
+    the cache must be ignored, not applied to the wrong points."""
+    from segfix import workspace
+
+    import gc
+
+    data = _project(tmp_path)
+    first = open_catalog(str(data), density_prompt=lambda *a: a[2])
+    first_count = first.count
+    assert workspace.cached_array(data, "voxel") is not None
+
+    # A different, sparser cloud at the same path. The memmap has to go
+    # first — Windows will not let an mmapped file be rewritten.
+    first._mm = None
+    del first
+    gc.collect()
+    coords = _grid(0.5, 6, 6, 2)
+    _write_arbor_las(data, coords, np.ones(len(coords), dtype=int))
+    assert workspace.cached_array(data, "voxel") is None
+
+    again = open_catalog(str(data), density_prompt=lambda *a: a[2])
+    assert again.count == len(coords)
+    assert again.working_count <= again.count
+    assert first_count != again.count
+
+
+def test_a_cloud_opened_outside_a_project_still_asks(tmp_path):
+    """No workspace, nowhere to remember: behaviour is exactly as before."""
+    path, _, _ = _dense_plot(tmp_path, name="loose.las")
+    asked = []
+    for _ in range(2):
+        open_catalog(
+            path, density_prompt=lambda s, n, sug: (asked.append(sug), sug)[1]
+        )
+    assert len(asked) == 2

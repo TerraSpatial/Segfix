@@ -41,7 +41,21 @@ def gpu_renderer_info() -> str | None:
     again (bypassing vispy's context tracking) makes the next draw call crash
     with "Attempt to retrieve context when no valid context". Just read
     whatever context vispy has already made current.
+
+    Asks vispy before PyOpenGL. Both read the same GL_RENDERER off the same
+    current context, but vispy is a hard dependency and PyOpenGL is not one
+    at all — it was only ever present because something else happened to
+    pull it in. A packaged build has no reason to carry it, so the PyOpenGL
+    route reported "unknown" on every machine it shipped to.
     """
+    try:
+        from vispy.gloo import gl
+
+        renderer = gl.glGetParameter(gl.GL_RENDERER)
+        if renderer:
+            return renderer if isinstance(renderer, str) else renderer.decode()
+    except Exception:
+        pass
     try:
         from OpenGL import GL
 
@@ -49,6 +63,24 @@ def gpu_renderer_info() -> str | None:
         return renderer.decode() if renderer else None
     except Exception:
         return None
+    return None
+
+
+def gpu_status(renderer: str | None, tries_left: int) -> tuple[str | None, bool]:
+    """What the GPU status label should say, and whether to stop asking.
+
+    Returns ``(text, done)``. ``text`` of ``None`` means no answer yet —
+    leave the label on "detecting…" and ask again on the next draw. The
+    label used to be written from the first draw whatever came back, so a
+    context that was not ready at that instant (the machine waking from
+    sleep, a driver reset, a hybrid-graphics switch) pinned it to "unknown"
+    for the rest of the session.
+    """
+    if renderer:
+        return f"GPU: {renderer}", True
+    if tries_left > 0:
+        return None, False
+    return "GPU: unknown", True
 
 
 # Muted, recessive greys: unassigned/noise points (whole ground + understory

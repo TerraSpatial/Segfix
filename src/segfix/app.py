@@ -414,6 +414,11 @@ def _bare_dock(widget, title: str):
     return dock
 
 
+#: How many draws gpu_renderer_info() gets to answer before the status bar
+#: settles on "unknown" — see _report_gpu.
+_GPU_READ_ATTEMPTS = 30
+
+
 def _run_scene(args) -> int:
     """Default (only) mode: a tree table where picking a row loads that tree
     plus its spatial neighbours into the 3D view, instead of the whole cloud.
@@ -435,7 +440,7 @@ def _run_scene(args) -> int:
     from .shift_ui import prompt_global_shift
     from .treecatalog import open_catalog
     from .update import display_version
-    from .viewer import busy, gpu_renderer_info
+    from .viewer import busy, gpu_renderer_info, gpu_status
     from .widgets import SegFixController, SegFixWidget, bind_shortcuts
 
     app = QApplication.instance() or QApplication(sys.argv)
@@ -473,14 +478,29 @@ def _run_scene(args) -> int:
     gpu_label.setStyleSheet("color: gray; padding: 0 6px;")
     status.addPermanentWidget(gpu_label)
 
+    # Draws left to ask on before settling for "unknown". The first draw is
+    # usually enough; this is headroom for a context that needs a moment.
+    gpu_tries = [_GPU_READ_ATTEMPTS]
+
     def _report_gpu(event=None) -> None:
         # No GL context is current until the canvas has actually drawn once
         # (it's built with show=False, and .update() only queues a repaint —
         # see busy()'s docstring in viewer.py) -- reading it any earlier
         # always reports "unknown", regardless of platform or GPU.
-        gpu = gpu_renderer_info()
-        gpu_label.setText(f"GPU: {gpu}" if gpu else "GPU: unknown")
-        view.canvas.events.draw.disconnect(_report_gpu)
+        #
+        # Drawing once is not quite the same as the context being ready to
+        # answer, though: after the machine wakes from sleep, a driver reset
+        # or a hybrid-graphics switch, the first draw can come back with
+        # nothing. This used to unhook itself on that first draw whatever it
+        # got, so a single unlucky moment left the label reading "unknown"
+        # for the rest of the session. Keep asking on later draws instead,
+        # and only give up once the budget is gone.
+        gpu_tries[0] -= 1
+        text, done = gpu_status(gpu_renderer_info(), gpu_tries[0])
+        if text is not None:
+            gpu_label.setText(text)
+        if done:
+            view.canvas.events.draw.disconnect(_report_gpu)
 
     view.canvas.events.draw.connect(_report_gpu)
 

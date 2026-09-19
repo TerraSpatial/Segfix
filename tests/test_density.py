@@ -83,6 +83,31 @@ def test_voxel_indices_keeps_the_point_nearest_each_voxel_centre():
     assert keep.tolist() == [2]
 
 
+def test_voxel_indices_breaks_a_tie_on_file_order():
+    """Two points equally near their voxel's centre: the earlier row wins.
+
+    voxel_indices picks the representative with a min-reduction that packs
+    the centre distance above the point's own index, so this pins the half of
+    that key which only shows up on an exact tie -- symmetric points around a
+    voxel centre are not rare in a gridded scan.
+    """
+    coords = np.array([
+        [0.000, 0.010, 0.010],   # 0.010 from the centre, first in file
+        [0.005, 0.010, 0.010],   # 0.005 from the centre -- the winner
+        [0.015, 0.010, 0.010],   # 0.005 too, but later in the file
+    ])
+    keep = density.voxel_indices(coords, 0.02)
+    assert keep.tolist() == [1]
+
+
+def test_voxel_indices_keeps_every_point_of_a_sparse_cloud():
+    """A cloud coarser than the voxel loses nothing (and the caller then
+    skips decimating at all)."""
+    coords = _grid(0.5, 5, 5, 2)
+    keep = density.voxel_indices(coords, 0.02)
+    assert keep.tolist() == list(range(len(coords)))
+
+
 def test_voxel_indices_rejects_a_nonpositive_voxel():
     with pytest.raises(ValueError, match="must be positive"):
         density.voxel_indices(_grid(0.01, 4, 4), 0.0)

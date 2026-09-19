@@ -61,12 +61,25 @@ def _median_nn(points: np.ndarray, rng, cap: int = _QUERY_CAP) -> float:
 
 def in_box(coords: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
     """Boolean mask of points inside an axis-aligned box, tested axis by axis
-    so a huge cloud never materialises two full ``(N, 3)`` temporaries."""
-    return (
-        (coords[:, 0] >= lo[0]) & (coords[:, 0] <= hi[0])
-        & (coords[:, 1] >= lo[1]) & (coords[:, 1] <= hi[1])
-        & (coords[:, 2] >= lo[2]) & (coords[:, 2] <= hi[2])
-    )
+    so a huge cloud never materialises two full ``(N, 3)`` temporaries.
+
+    The six comparisons write into two reused buffers rather than leaving
+    eleven ``(N,)`` temporaries behind: :func:`estimate_spacing` calls this up
+    to twenty-four times while it hunts for a block size, and a large
+    allocate/free round trip costs roughly fifty times more on Windows (fresh
+    pages committed through VirtualAlloc, kernel-zeroed) than on Linux, where
+    glibc hands the same warm arena back.
+    """
+    n = len(coords)
+    mask = np.ones(n, dtype=bool)
+    tmp = np.empty(n, dtype=bool)
+    for axis in range(3):
+        column = coords[:, axis]
+        np.greater_equal(column, lo[axis], out=tmp)
+        mask &= tmp
+        np.less_equal(column, hi[axis], out=tmp)
+        mask &= tmp
+    return mask
 
 
 def estimate_spacing(coords: np.ndarray, rng=None) -> float:
@@ -155,30 +168,79 @@ def voxel_indices(coords: np.ndarray, voxel: float) -> np.ndarray:
     coords = np.asarray(coords)
     if voxel <= 0:
         raise ValueError(f"voxel size must be positive, got {voxel}")
-    if len(coords) == 0:
+    n = len(coords)
+    if n == 0:
         return np.empty(0, dtype=np.int64)
 
     origin = coords.min(axis=0)
-    local = (coords.astype(np.float64) - origin) / voxel
-    keys = np.floor(local).astype(np.int64)
-    # Distance to the voxel centre, in voxel units — the tie-break that
-    # decides which point of each voxel is kept.
-    offset = ((local - keys - 0.5) ** 2).sum(axis=1).astype(np.float32)
+    # Voxel key and centre-offset, one axis at a time into buffers allocated
+    # once. Written as whole-array expressions this step builds around a
+    # dozen ``(N, 3)`` float64 temporaries — about 200 bytes of churn per
+    # point, or 4GB on a 20M-point plot — and those large allocate/free round
+    # trips cost roughly fifty times more on Windows (fresh pages committed
+    # through VirtualAlloc, kernel-zeroed) than on Linux, where glibc reuses a
+    # warm arena. This is the "Downsampling" step of an import, so it runs on
+    # the biggest array the app ever touches.
+    keys = np.empty((3, n), dtype=np.int64)  # axis-major: each row contiguous
+    # Squared distance to the voxel centre, in voxel units — the tie-break
+    # that decides which point of each voxel is kept.
+    offset = np.zeros(n, dtype=np.float64)
+    buf = np.empty(n, dtype=np.float64)
+    cell = np.empty(n, dtype=np.float64)
+    for axis in range(3):
+        np.subtract(coords[:, axis], origin[axis], out=buf, dtype=np.float64)
+        buf /= voxel
+        np.floor(buf, out=cell)
+        keys[axis] = cell
+        buf -= cell  # fractional position within the voxel, in [0, 1)
+        buf -= 0.5
+        buf *= buf
+        offset += buf
+    offset = offset.astype(np.float32)
 
-    dims = keys.max(axis=0) + 1
+    dims = keys.max(axis=1) + 1
     # Flattening three axes into one int64 is much faster than a structured
     # unique, but only while the product fits; fall back when it doesn't
     # (an enormous extent against a tiny voxel).
     if float(dims[0]) * float(dims[1]) * float(dims[2]) < 2.0**62:
-        flat = (keys[:, 0] * dims[1] + keys[:, 1]) * dims[2] + keys[:, 2]
+        flat = keys[0] * dims[1]
+        flat += keys[1]
+        flat *= dims[2]
+        flat += keys[2]
     else:  # pragma: no cover - needs a >10^6 m extent at millimetre voxels
-        flat = np.unique(keys, axis=0, return_inverse=True)[1]
+        flat = np.unique(keys.T, axis=0, return_inverse=True)[1]
 
-    # Sorted by voxel, and within a voxel by distance to its centre, so the
-    # first row of each voxel's run is the representative.
-    order = np.lexsort((offset, flat))
-    _, first = np.unique(flat[order], return_index=True)
-    return np.sort(order[first].astype(np.int64))
+    # Group the points by voxel, then take the centre-most of each group.
+    #
+    # ``np.lexsort((offset, flat))`` says that in one line, but it is two
+    # full sorts of N keys where one will do, and sorting is ~80% of this
+    # function. So: one stable sort by voxel, and the tie-break folded into
+    # an integer min-reduction over each run.
+    order = np.argsort(flat, kind="stable")
+    ordered = flat[order]
+    # Run starts — ``ordered`` is sorted, so a voxel's rows are the block
+    # between two rows that differ. (np.unique(..., return_index=True) would
+    # answer this by sorting all N keys yet again.)
+    first = np.empty(n, dtype=bool)
+    first[0] = True
+    np.not_equal(ordered[1:], ordered[:-1], out=first[1:])
+    starts = np.flatnonzero(first)
+
+    # IEEE-754 bit patterns of non-negative floats compare as integers in the
+    # same order as the floats, and ``offset`` is a sum of squares, so packing
+    # it above the point's own index makes one int64 that orders by distance
+    # to the voxel centre and then, for a tie, by position — which is exactly
+    # the row lexsort's stable second key would have left first in the run.
+    if n >= 2**32:  # pragma: no cover - 4 billion points is ~50GB of coords
+        # No room to pack an index alongside the offset; fall back.
+        best = np.lexsort((offset, flat))[starts]
+    else:
+        packed = offset[order].view(np.uint32).astype(np.int64)
+        packed <<= 32
+        packed |= order
+        best = np.minimum.reduceat(packed, starts)
+        best &= 0xFFFFFFFF  # unpack the index the winning offset carried
+    return np.sort(best.astype(np.int64))
 
 
 def class_trees(coords: np.ndarray, codes: np.ndarray, candidates: np.ndarray):

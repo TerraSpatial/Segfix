@@ -417,6 +417,8 @@ class _BaseCatalog:
         labelled ones) because the review workflow relies on lassoing them
         and pressing A to add them to the current tree.
         """
+        from . import density
+
         labels = [int(t) for t in labels]
         parts = [self.indices_for(t) for t in labels]
         tree_idx = (
@@ -427,8 +429,13 @@ class _BaseCatalog:
 
         pts = self.coords[tree_idx]
         lo, hi = pts.min(axis=0) - margin, pts.max(axis=0) + margin
-        in_box = np.all((self.coords >= lo) & (self.coords <= hi), axis=1)
-        unassigned_idx = np.flatnonzero(in_box & (self.labels == UNASSIGNED))
+        # density.in_box, not `np.all((coords >= lo) & (coords <= hi), 1)`:
+        # self.coords is the whole catalogue, so the latter builds three
+        # (N, 3) boolean temporaries — 1.8GB of churn per tree load on a
+        # 200M-point file, for a mask that fits in 200MB.
+        near = density.in_box(self.coords, lo, hi)
+        near &= self.labels == UNASSIGNED
+        unassigned_idx = np.flatnonzero(near)
 
         global_idx = np.union1d(tree_idx, unassigned_idx).astype(np.int64)
 

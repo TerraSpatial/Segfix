@@ -25,6 +25,61 @@ from qtpy.QtWidgets import QWidget
 
 
 # -- geometry -----------------------------------------------------------
+def _crossings(polygon: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    """Even-odd ray test over ``pts``, one edge at a time.
+
+    An edge can only be crossed by points whose y lies in that edge's own y
+    span, so sorting the points by y once lets each edge do its arithmetic on
+    just the contiguous slice it can possibly affect. Summed over a closed
+    outline those slices come to roughly two passes over the points however
+    many vertices there are, in place of the vertices x points the
+    expression-per-edge version does over the whole array.
+
+    That also keeps every temporary the size of one slice rather than the
+    size of the cloud, which is what the Windows/Linux split turned on: the
+    old version allocated about six full-length arrays per vertex, and a
+    large allocate/free round trip measured ~50x dearer on Windows (fresh
+    pages through VirtualAlloc, kernel-zeroed) than on Linux (a warm glibc
+    arena). Hence 20.0s vs 9.0s there for 3M points and a 500-vertex path.
+    """
+    n = len(pts)
+    inside = np.zeros(n, dtype=bool)
+    # Sorted by y, so each edge's band is a slice rather than a scatter.
+    order = np.argsort(pts[:, 1], kind="stable")
+    xs = np.ascontiguousarray(pts[order, 0])
+    ys = np.ascontiguousarray(pts[order, 1])
+    hit = np.zeros(n, dtype=bool)
+
+    x1, y1 = polygon[:, 0], polygon[:, 1]
+    x2, y2 = np.roll(x1, -1), np.roll(y1, -1)
+
+    for ex1, ey1, ex2, ey2 in zip(x1, y1, x2, y2):
+        # `(ey1 > y) != (ey2 > y)` is true for exactly min <= y < max, either
+        # way the edge runs; a horizontal edge spans nothing and is skipped,
+        # which is also what makes the zero-denominator guard unnecessary.
+        ylo, yhi = (ey1, ey2) if ey1 < ey2 else (ey2, ey1)
+        lo = int(np.searchsorted(ys, ylo, side="left"))
+        hi = int(np.searchsorted(ys, yhi, side="left"))
+        if lo >= hi:
+            continue
+        # x of the edge at each of those heights; the ray crosses when the
+        # point sits left of it. Multiply before dividing, so a point sitting
+        # exactly on an edge rounds the same way it did when this was one
+        # expression -- folding the two constants into a single factor first
+        # is a different rounding, and flips such a point in or out.
+        x_cross = ys[lo:hi] - ey1
+        x_cross *= ex2 - ex1
+        x_cross /= ey2 - ey1
+        x_cross += ex1
+        band = hit[lo:hi]
+        np.less(xs[lo:hi], x_cross, out=band)
+        np.not_equal(inside[lo:hi], band, out=inside[lo:hi])  # flip on crossing
+
+    out = np.empty(n, dtype=bool)
+    out[order] = inside
+    return out
+
+
 def points_in_polygon(polygon: np.ndarray, pts: np.ndarray) -> np.ndarray:
     """Vectorised even-odd point-in-polygon test.
 
@@ -37,23 +92,23 @@ def points_in_polygon(polygon: np.ndarray, pts: np.ndarray) -> np.ndarray:
     """
     polygon = np.asarray(polygon, dtype=np.float64)
     pts = np.asarray(pts, dtype=np.float64)
-    if len(polygon) < 3 or len(pts) == 0:
-        return np.zeros(len(pts), dtype=bool)
-
-    x, y = pts[:, 0], pts[:, 1]
     inside = np.zeros(len(pts), dtype=bool)
+    if len(polygon) < 3 or len(pts) == 0:
+        return inside
 
-    x1, y1 = polygon[:, 0], polygon[:, 1]
-    x2, y2 = np.roll(x1, -1), np.roll(y1, -1)
-
-    # For each edge, flip `inside` for points whose horizontal ray crosses it.
-    for ex1, ey1, ex2, ey2 in zip(x1, y1, x2, y2):
-        cond = (ey1 > y) != (ey2 > y)
-        # x-coordinate of the edge at height y (guard against horizontal edges)
-        denom = ey2 - ey1
-        denom = denom if denom != 0 else np.finfo(np.float64).eps
-        x_cross = (ex2 - ex1) * (y - ey1) / denom + ex1
-        inside ^= cond & (x < x_cross)
+    # A lasso covers a small part of the canvas, so reject on the outline's
+    # bounding box first: four cheap comparisons drop most of the cloud, and
+    # the O(vertices x points) loop then runs on what is left.
+    lo = polygon.min(axis=0)
+    hi = polygon.max(axis=0)
+    px, py = pts[:, 0], pts[:, 1]
+    cand = px >= lo[0]
+    cand &= px <= hi[0]
+    cand &= py >= lo[1]
+    cand &= py <= hi[1]
+    rows = np.flatnonzero(cand)
+    if rows.size:
+        inside[rows] = _crossings(polygon, pts[rows])
     return inside
 
 
@@ -239,14 +294,23 @@ class LassoTool:
                 self.on_select(np.empty(0, dtype=np.int64), additive=False)
             return
         coords = self.view.coords
-        canvas_xy, valid = self.view.project_to_canvas(coords)
-        inside = points_in_polygon(path, canvas_xy) & valid
         # Hidden points (a hide checkbox, "show unassigned", or either section
-        # tool — all of which set view.shown) are unselectable.
+        # tool — all of which set view.shown) are unselectable, so drop them
+        # up front rather than after the test: with a tree isolated out of its
+        # neighbours most of the cloud is hidden, and projecting and
+        # polygon-testing it only to mask it away afterwards is the bulk of
+        # the work for none of the answer.
         shown = np.asarray(self.view.shown, dtype=bool)
-        if shown.shape[0] == inside.shape[0]:
-            inside &= shown
+        rows = None
+        if shown.shape[0] == len(coords) and not shown.all():
+            rows = np.flatnonzero(shown)
+            coords = coords[rows]
+        canvas_xy, valid = self.view.project_to_canvas(coords)
+        inside = points_in_polygon(path, canvas_xy)
+        inside &= valid
         indices = np.flatnonzero(inside)
+        if rows is not None:
+            indices = rows[indices]
         self.on_select(indices, additive=additive)
 
 

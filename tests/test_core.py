@@ -164,6 +164,72 @@ def test_points_in_polygon_degenerate():
     assert not points_in_polygon(poly, np.array([[0.5, 0.5]])).any()
 
 
+def test_points_in_polygon_edge_and_vertex_rows():
+    """Points whose y sits exactly on a vertex.
+
+    The even-odd rule counts an edge as spanning ``min <= y < max``, so a
+    point level with a vertex must be decided by one of the two edges meeting
+    there, never both and never neither. An axis-aligned outline puts every
+    point of its own left and right edges on such a row, so getting this
+    wrong quietly shifts a lasso's whole boundary by a pixel.
+    """
+    poly = np.array([[10, 10], [90, 10], [90, 90], [10, 90]], dtype=float)
+    grid = np.stack(
+        np.meshgrid(np.arange(0.0, 100.0), np.arange(0.0, 100.0)), -1
+    ).reshape(-1, 2)
+    mask = points_in_polygon(poly, grid)
+    # Half-open in both axes: [10, 90) x [10, 90) -> 80 x 80 points.
+    assert int(mask.sum()) == 80 * 80
+    x, y = grid[:, 0], grid[:, 1]
+    expected = (x >= 10) & (x < 90) & (y >= 10) & (y < 90)
+    assert np.array_equal(mask, expected)
+
+
+def test_points_in_polygon_ignores_horizontal_and_repeated_edges():
+    """Duplicate vertices and horizontal edges contribute no crossings."""
+    plain = np.array([[10, 10], [90, 10], [90, 90], [10, 90]], dtype=float)
+    padded = np.array(
+        [[10, 10], [10, 10], [50, 10], [90, 10], [90, 90], [10, 90]],
+        dtype=float,
+    )
+    pts = np.array(
+        [[50, 50], [10, 10], [90, 50], [50, 90], [5, 50], [95, 50]],
+        dtype=float,
+    )
+    assert np.array_equal(
+        points_in_polygon(plain, pts), points_in_polygon(padded, pts)
+    )
+    # A polygon with no vertical extent encloses nothing.
+    flat = np.array([[10, 50], [50, 50], [90, 50]], dtype=float)
+    assert not points_in_polygon(flat, pts).any()
+
+
+def test_points_in_polygon_matches_a_reference_sweep():
+    """Agreement with a straight per-point reference over a self-intersecting
+    outline — the bounding-box reject and the per-edge y-banding are both
+    optimisations, and neither may change an answer."""
+    rng = np.random.default_rng(11)
+    angles = np.linspace(0, 2 * np.pi, 15, endpoint=False)
+    radius = np.where(np.arange(15) % 2 == 0, 40.0, 12.0)
+    poly = np.c_[50 + radius * np.cos(angles), 50 + radius * np.sin(angles)]
+    pts = rng.random((5000, 2)) * 140 - 20  # a third of them outside the bbox
+
+    def reference(polygon, point):
+        hit = False
+        m = len(polygon)
+        for i in range(m):
+            (ex1, ey1), (ex2, ey2) = polygon[i], polygon[(i + 1) % m]
+            if (ey1 > point[1]) != (ey2 > point[1]):
+                denom = ey2 - ey1
+                cross = (ex2 - ex1) * (point[1] - ey1) / denom + ex1
+                if point[0] < cross:
+                    hit = not hit
+        return hit
+
+    mask = points_in_polygon(poly, pts)
+    assert np.array_equal(mask, [reference(poly, p) for p in pts])
+
+
 def test_ply_roundtrip_keeps_labels_coords_and_attributes(tmp_path):
     c = make_cloud()
     c.attributes["intensity"] = np.arange(12, dtype=np.uint16)

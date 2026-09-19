@@ -1,0 +1,174 @@
+name: Windows installer
+
+# Builds the Windows installer AND proves it works, on a clean unlocked
+# Windows machine — which is the point. The maintainer has no such machine
+# to test on, so a green run here is the evidence that what goes out to
+# other people installs, launches and uninstalls.
+#
+# Run it by hand from the Actions tab any time (workflow_dispatch); tagging
+# a release also runs it and attaches the results.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".github/workflows/installer.yml"
+      - "src/segfix/**"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp the installer with (e.g. 1.0.6)"
+        required: false
+
+permissions:
+  contents: write          # to attach the installer to the release
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install segfix and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+          pip install pyinstaller
+
+      - name: Work out the version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=0.0.0-test" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Freeze the app
+        run: pyinstaller packaging/segfix.spec --noconfirm
+
+      # -- does the frozen bundle actually run? ---------------------------
+      # A windowed PyInstaller build has no stdout and exits 0 whatever it
+      # was asked -- `segfix.exe --not-a-flag` "succeeds" too -- so an exit
+      # code proves nothing. Still being alive after 20s does: that only
+      # happens once PyQt6, vispy, scipy and laspy have all imported and the
+      # startup dialog is up. Offscreen, so no display is needed.
+      - name: Check the frozen build starts
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $app = Start-Process -FilePath dist\segfix\segfix.exe -PassThru
+          Start-Sleep -Seconds 20
+          if ($app.HasExited) {
+            throw "frozen segfix.exe died on startup (exit $($app.ExitCode))"
+          }
+          Stop-Process -Id $app.Id -Force
+          Write-Host "OK: still running after 20s"
+
+      - name: Build the installer
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "ISCC.exe" }
+          & $iscc /DAppVersion=${{ steps.version.outputs.value }} packaging\segfix.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      # -- does the installer actually install? ---------------------------
+      - name: Install it silently, run it, uninstall it
+        run: |
+          $setup = Get-ChildItem dist\segfix-*-setup.exe | Select-Object -First 1
+          $target = "$env:LOCALAPPDATA\segfix-citest"
+          Write-Host "Installing $($setup.Name) to $target"
+          # /VERYSILENT needs no clicks; /DIR proves DefaultDirName is
+          # overridable; no admin is requested (PrivilegesRequired=lowest).
+          Start-Process -FilePath $setup.FullName -Wait -ArgumentList `
+            "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$target"
+
+          $exe = Join-Path $target "segfix.exe"
+          if (-not (Test-Path $exe)) { throw "installer put no segfix.exe in $target" }
+          Write-Host "OK: installed"
+
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $app = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 20
+          if ($app.HasExited) {
+            throw "installed segfix.exe died on startup (exit $($app.ExitCode))"
+          }
+          Stop-Process -Id $app.Id -Force
+          Write-Host "OK: the installed copy runs"
+
+          $uninstaller = Get-ChildItem "$target\unins*.exe" | Select-Object -First 1
+          if (-not $uninstaller) { throw "no uninstaller was written" }
+          Start-Process -FilePath $uninstaller.FullName -Wait -ArgumentList `
+            "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"
+          Start-Sleep -Seconds 5
+          if (Test-Path $exe) { throw "uninstall left segfix.exe behind" }
+          Write-Host "OK: uninstalled cleanly"
+
+      - name: Package the portable zip
+        shell: bash
+        run: |
+          cd dist
+          7z a -tzip "segfix-${{ steps.version.outputs.value }}-portable.zip" segfix/
+
+      # -- does the no-admin route work? ----------------------------------
+      # The PowerShell installer is what a locked-down machine gets, where an
+      # unknown .exe is refused. It has to install into an existing Python
+      # and leave a shortcut pointing at that interpreter.
+      - name: Check the no-admin PowerShell route
+        run: |
+          python -m venv "$env:RUNNER_TEMP\psenv"
+          $py = "$env:RUNNER_TEMP\psenv\Scripts\python.exe"
+          & powershell -ExecutionPolicy Bypass -File packaging\install-segfix.ps1 `
+            -Python $py
+          if ($LASTEXITCODE -ne 0) { throw "install-segfix.ps1 failed" }
+
+          $link = Join-Path ([Environment]::GetFolderPath("Programs")) "segfix.lnk"
+          if (-not (Test-Path $link)) { throw "no Start Menu shortcut was created" }
+          $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($link)
+          Write-Host "shortcut -> $($shortcut.TargetPath) $($shortcut.Arguments)"
+          if ($shortcut.Arguments -notmatch "-m segfix") {
+            throw "shortcut does not launch via -m segfix"
+          }
+          if ($shortcut.TargetPath -notmatch "pythonw\.exe$") {
+            throw "shortcut should point at pythonw.exe, not a generated .exe"
+          }
+
+          # And the thing it points at must actually start.
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $app = Start-Process -FilePath $shortcut.TargetPath -PassThru `
+            -ArgumentList $shortcut.Arguments
+          Start-Sleep -Seconds 20
+          if ($app.HasExited) { throw "pythonw -m segfix died (exit $($app.ExitCode))" }
+          Stop-Process -Id $app.Id -Force
+          Write-Host "OK: the no-admin route installs and launches"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: segfix-windows
+          path: |
+            dist/segfix-*-setup.exe
+            dist/segfix-*-portable.zip
+
+      - name: Attach it to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # publish.yml only pushes to PyPI, so the GitHub release may not
+          # exist yet; make it if not, then upload into it either way.
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" \
+                 --title "$GITHUB_REF_NAME" --notes "segfix $GITHUB_REF_NAME"
+          gh release upload "$GITHUB_REF_NAME" \
+            dist/segfix-*-setup.exe \
+            dist/segfix-*-portable.zip \
+            packaging/install-segfix.ps1 --clobber

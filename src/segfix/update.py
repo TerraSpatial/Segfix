@@ -52,6 +52,15 @@ class UpdateStatus:
 
 
 # -- which kind of install is this? -------------------------------------------
+def is_frozen() -> bool:
+    """Running from the packaged Windows build rather than a Python install.
+
+    PyInstaller sets ``sys.frozen`` and unpacks to ``sys._MEIPASS``; neither
+    exists under a normal ``pip install``.
+    """
+    return bool(getattr(sys, "frozen", False))
+
+
 def _repo_root(package_dir: Path | None = None) -> Path | None:
     """The segfix checkout this package runs from, or ``None`` if it isn't
     running from one.
@@ -220,6 +229,14 @@ def check_for_update(timeout: float = 8.0) -> UpdateStatus | None:
     installed copy, new upstream commits for a checkout (see the module
     docstring). Never raises; meant to be called from a background thread
     on every startup."""
+    if is_frozen():
+        # The Windows installer build. There is no interpreter to pip into —
+        # sys.executable is segfix.exe, so the PyPI path would relaunch the
+        # app instead of upgrading it — and the files live under Program
+        # Files, where a running process cannot replace its own. Updating a
+        # frozen copy means downloading the next installer, which is not
+        # something to start from a startup banner.
+        return None
     root = _repo_root()
     if root is not None:
         return _check_git(root, timeout)

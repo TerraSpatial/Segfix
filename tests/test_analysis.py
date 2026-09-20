@@ -168,3 +168,26 @@ def test_the_cost_stops_following_the_gap():
     tight = took(spacing)
     loose = took(spacing * 16)
     assert loose < tight * 8  # cubic growth would be ~4000x
+
+
+def test_neighbour_distances_say_how_close_each_tree_comes():
+    """The panel orders its buttons by this, so key 1 is the tree whose
+    crown the selection most likely belongs to."""
+    import numpy as np
+
+    from segfix.analysis import neighbour_distances, neighbours_by_points
+    from segfix.model import PointCloud
+
+    rng = np.random.default_rng(0)
+    coords = [rng.random((40, 3)) * 0.2]
+    labels = [np.full(40, 1)]
+    for label, gap in ((7, 0.15), (3, 0.6)):  # 7 is nearer, 3 has the lower id
+        coords.append(rng.random((40, 3)) * 0.2 + np.array([0.2 + gap, 0, 0]))
+        labels.append(np.full(40, label))
+    cloud = PointCloud(coords=np.concatenate(coords).astype(np.float32),
+                       labels=np.concatenate(labels).astype(np.int32))
+
+    near = neighbour_distances(cloud, 1, reach=2.0)
+    assert set(near) == neighbours_by_points(cloud, 1, reach=2.0) == {3, 7}
+    assert near[7] < near[3]
+    assert sorted(near, key=near.get) == [7, 3]  # nearest first, not 3 then 7

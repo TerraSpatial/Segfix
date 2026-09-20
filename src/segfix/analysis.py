@@ -180,11 +180,22 @@ def neighbours_by_points(
     cloud: PointCloud, tid: int, reach: float, rng=None
 ) -> set[int]:
     """IDs of trees whose points come within ``reach`` metres of tree
-    ``tid``'s points.
+    ``tid``'s points. :func:`neighbour_distances` also says how close."""
+    return set(neighbour_distances(cloud, tid, reach, rng))
+
+
+def neighbour_distances(
+    cloud: PointCloud, tid: int, reach: float, rng=None
+) -> dict[int, float]:
+    """``{tree id: how close it comes to tree ``tid``, in metres}`` for every
+    tree within ``reach``.
 
     Bounding-box tests massively over-count neighbours in a closed canopy
     (a tall tree's box spans its whole crown), so boxes are only used as a
     prefilter; candidates are confirmed by sampled point-to-point distance.
+    That distance is what the panel orders its buttons by, so the nearest
+    tree — the one whose crown the selection probably belongs to — is the
+    first button, and the first number key.
     """
     from scipy.spatial import cKDTree
 
@@ -192,7 +203,7 @@ def neighbours_by_points(
     labels, coords = cloud.labels, cloud.coords
     mine = np.flatnonzero(labels == tid)
     if mine.size == 0:
-        return set()
+        return {}
     lo = coords[mine].min(axis=0) - reach
     hi = coords[mine].max(axis=0) + reach
     # density.in_box rather than the chained expression this used to spell
@@ -210,14 +221,14 @@ def neighbours_by_points(
     cand = np.unique(box_labels)
     cand = cand[(cand != UNASSIGNED) & (cand != NOISE) & (cand != tid)]
     if not cand.size:
-        return set()
+        return {}
     kd = cKDTree(coords[_sample(rng, mine)])
-    out: set[int] = set()
+    out: dict[int, float] = {}
     for t in cand:
         theirs = box_idx[box_labels == t]
         d, _ = kd.query(
             coords[_sample(rng, theirs)], k=1, distance_upper_bound=reach
         )
         if np.isfinite(d).any():
-            out.add(int(t))
+            out[int(t)] = float(np.min(d[np.isfinite(d)]))
     return out

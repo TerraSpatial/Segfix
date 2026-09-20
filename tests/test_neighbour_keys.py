@@ -139,3 +139,64 @@ def test_a_neighbour_past_the_keys_wears_no_number(panel):
     for text, keycap in zip(texts, NEIGHBOUR_KEYCAPS):
         assert text.startswith(keycap)
     assert texts[NEIGHBOUR_KEYS][0] not in NEIGHBOUR_KEYCAPS  # just the id
+
+
+def test_the_keys_reach_the_nearest_trees_not_the_lowest_numbered(panel):
+    """Sorted by id, the keys landed on whichever trees happened to have the
+    lowest numbers; in a closed canopy that is nobody's idea of the right
+    five."""
+    p, seg, _cloud, _said = panel
+    from segfix.model import PointCloud
+
+    rng = np.random.default_rng(2)
+    blocks = [rng.random((60, 3)) * 0.4]
+    labels = [np.full(60, 105)]
+    # id order and distance order deliberately disagree
+    for nid, gap in ((247, 0.1), (102, 0.5), (319, 0.2), (103, 0.8)):
+        blocks.append(rng.random((40, 3)) * 0.2 + np.array([0.4 + gap, 0, 0]))
+        labels.append(np.full(40, nid))
+    crowded = PointCloud(coords=np.concatenate(blocks).astype(np.float32),
+                         labels=np.concatenate(labels).astype(np.int32))
+    p.c.view.load_cloud(crowded)
+    seg.set_cloud(crowded)
+    p.focus_margin.setValue(2.0)
+    p._set_current(105, fly=False)
+
+    assert p._neighbour_ids == [247, 319, 102, 103]
+    assert "m away, key 1" in p._neighbour_btns[0].toolTip()
+
+
+def test_what_needs_a_selection_is_dead_without_one(panel):
+    """The panel used to offer every button with nothing selected, and
+    answer a click with a status line."""
+    p, seg, cloud, _said = panel
+    assert not p.add_btn.isEnabled()
+    assert not p.split_btn.isEnabled()
+    assert not any(b.isEnabled() for b in p._neighbour_btns)
+
+    _select(seg, 1)
+    p._update_selection()
+    assert p.add_btn.isEnabled()
+    assert p.split_btn.isEnabled()
+    assert all(b.isEnabled() for b in p._neighbour_btns)
+
+    seg.view.selected = set()
+    p._update_selection()
+    assert not p.add_btn.isEnabled()
+
+
+def test_unassign_and_noise_stay_live_with_nothing_selected(panel):
+    """With no selection those act on the whole current tree — that is how a
+    bush gets dismissed in one key — so they must not be greyed out with the
+    rest."""
+    from segfix.model import NOISE
+
+    p, seg, cloud, said = panel
+    assert seg.selected_indices().size == 0
+    was_tree_1 = np.flatnonzero(cloud.labels == 1)
+    assert was_tree_1.size
+
+    p.on_noise()  # no selection: the whole current tree
+
+    np.testing.assert_array_equal(cloud.labels[was_tree_1], NOISE)
+    assert any("noise" in m.lower() for m in said)

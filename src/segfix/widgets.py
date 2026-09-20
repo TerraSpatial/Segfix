@@ -843,7 +843,9 @@ class SegFixWidget(QWidget):
         sel.addWidget(self.neighbour_scroll)
 
         sel.addWidget(self._subheading("Remove selection from its tree"))
-        self._button(sel, "Split off as new tree (S)", self.on_create_new, "new")
+        self.split_btn = self._button(
+            sel, "Split off as new tree (S)", self.on_create_new, "new"
+        )
         self._button(sel, "Unassign (D)", self.on_unassign, "unassign")
         self._button(sel, "Noise (X)", self.on_noise, "noise")
         sel_box.show()
@@ -909,13 +911,14 @@ class SegFixWidget(QWidget):
                 self._style_done_row(row, self._row_id(row) in self.done_ids)
             tt.blockSignals(False)
 
-    def _button(self, parent_layout, text, slot, icon_name=None) -> None:
+    def _button(self, parent_layout, text, slot, icon_name=None):
         btn = QPushButton(text)
         if icon_name:
             btn.setIcon(icon(icon_name))
             btn.setIconSize(QSize(18, 18))
         btn.clicked.connect(slot)
         parent_layout.addWidget(btn)
+        return btn
 
     def _toggle_popover(self, popover: QWidget, anchor) -> None:
         """Show/hide a ``Qt.Popup`` widget just under ``anchor`` — a floating
@@ -1754,11 +1757,29 @@ class SegFixWidget(QWidget):
                 # slider before the first click, with nothing selected yet.
                 self.reset_cluster_gap()
             self.sel_info.setText("No selection")
+            self._refresh_selection_actions()
             return
         trees = self._selected_trees(idx)
         self.sel_info.setText(
             f"Selected: {idx.size:,} points across {len(trees)} tree(s)"
         )
+        self._refresh_selection_actions()
+
+    def _refresh_selection_actions(self) -> None:
+        """Enable only what the current state can actually do.
+
+        With nothing selected, "Add", "Split off" and the neighbour buttons
+        have nothing to act on — they used to look live and answer a click
+        with a status line. Unassign and Noise stay enabled: with no
+        selection those act on the whole current tree, which is how a bush
+        gets dismissed in one key.
+        """
+        has_selection = self.c.selected_indices().size > 0
+        for btn in (getattr(self, "add_btn", None),
+                    getattr(self, "split_btn", None),
+                    *getattr(self, "_neighbour_btns", ())):
+            if btn is not None:
+                btn.setEnabled(has_selection)
 
     def _selected_trees(self, idx: np.ndarray) -> np.ndarray:
         """Distinct real tree IDs (no unassigned/noise) under the selection."""
@@ -1795,14 +1816,15 @@ class SegFixWidget(QWidget):
 
         from . import analysis
 
-        neighbours = analysis.neighbours_by_points(
+        near = analysis.neighbour_distances(
             self.c.cloud, self.current, self.focus_margin.value()
         )
-        # self.neighbour_label.setVisible(bool(neighbours))
-        # In the order the number keys use: 1 is the first button, so a
-        # patch can go to a neighbour without the hand leaving the keyboard
-        # (see send_to_nth_neighbour).
-        self._neighbour_ids = sorted(neighbours)
+        # Nearest first, so key 1 is the tree whose crown the selection most
+        # likely belongs to. Sorted by id, the keys landed on whichever five
+        # trees happened to have the lowest numbers — in a closed canopy
+        # with a dozen neighbours, that is nobody's idea of the right five.
+        self._neighbour_ids = sorted(near, key=lambda n: (near[n], n))
+        self._neighbour_btns = []
         for i, nid in enumerate(self._neighbour_ids):
             rgba = colors_for_labels(
                 np.array([nid]), self.c.cloud.label_colors
@@ -1820,12 +1842,17 @@ class SegFixWidget(QWidget):
                 f"QPushButton {{ border: 2px solid rgb({r},{g},{b}); "
                 "border-radius: 3px; padding: 2px 4px; }"
             )
-            key = f" (key {i + 1})" if i < NEIGHBOUR_KEYS else ""
-            btn.setToolTip(f"Move the current selection to tree {nid}{key}")
+            key = f", key {i + 1}" if i < NEIGHBOUR_KEYS else ""
+            btn.setToolTip(
+                f"Move the current selection to tree {nid} "
+                f"({near[nid]:.2f} m away{key})"
+            )
+            self._neighbour_btns.append(btn)
             btn.clicked.connect(
                 lambda _checked=False, n=nid: self.on_send_to_neighbour(n)
             )
             self.neighbour_grid.addWidget(btn, i // 2, i % 2)
+        self._refresh_selection_actions()
 
     def send_to_nth_neighbour(self, n: int) -> None:
         """Move the selection into the ``n``-th neighbouring tree, counting

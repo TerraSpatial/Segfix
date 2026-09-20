@@ -212,3 +212,31 @@ def test_unassign_and_noise_stay_live_with_nothing_selected(panel):
 
     np.testing.assert_array_equal(cloud.labels[was_tree_1], NOISE)
     assert any("noise" in m.lower() for m in said)
+
+
+def test_the_two_blocks_line_up(panel):
+    """The scroll area's bar eats into its buttons' width; the keyed rows
+    give up the same strip, but only when a bar is actually there."""
+    p, seg, _cloud, _said = panel
+    from segfix.model import PointCloud
+    from segfix.widgets import NEIGHBOUR_KEYS
+
+    def neighbours(count):
+        rng = np.random.default_rng(3)
+        blocks, labels = [rng.random((60, 3)) * 0.5], [np.full(60, 1)]
+        for k in range(count):
+            angle = 2 * np.pi * k / count
+            shift = np.array([np.cos(angle), np.sin(angle), 0.0]) * 0.4
+            blocks.append(rng.random((40, 3)) * 0.4 + shift)
+            labels.append(np.full(40, k + 2))
+        cloud = PointCloud(coords=np.concatenate(blocks).astype(np.float32),
+                           labels=np.concatenate(labels).astype(np.int32))
+        p.c.view.load_cloud(cloud)
+        seg.set_cloud(cloud)
+        p.focus_margin.setValue(3.0)
+        p._set_current(1, fly=False)
+        return p.keyed_grid.contentsMargins().right()
+
+    fits = NEIGHBOUR_KEYS + p.NEIGHBOUR_ROWS * 2   # exactly fills, no bar
+    assert neighbours(fits) == 0
+    assert neighbours(fits + 2) > 0                # overflows: a bar appears

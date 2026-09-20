@@ -1926,9 +1926,16 @@ class SegFixWidget(QWidget):
             row = i // 2 if keyed else (i - NEIGHBOUR_KEYS) // 2
             grid.addWidget(btn, row, i % 2 if keyed else (i - NEIGHBOUR_KEYS) % 2)
         # Nothing to scroll to when every neighbour has a key of its own.
-        self.neighbour_scroll.setVisible(
-            len(self._neighbour_ids) > NEIGHBOUR_KEYS
-        )
+        overflowing = len(self._neighbour_ids) > NEIGHBOUR_KEYS
+        self.neighbour_scroll.setVisible(overflowing)
+        # The scroll area's bar eats into its buttons' width, so the keyed
+        # rows above give up the same strip — but only when a bar is
+        # actually there, which is when the extras outgrow the rows on show.
+        # Reserving it either way leaves one block or the other short.
+        extras = len(self._neighbour_ids) - NEIGHBOUR_KEYS
+        scrolls = extras > self.NEIGHBOUR_ROWS * 2
+        bar = self.neighbour_scroll.verticalScrollBar().sizeHint().width()
+        self.keyed_grid.setContentsMargins(0, 0, bar if scrolls else 0, 0)
         self._refresh_selection_actions()
 
     def send_to_nth_neighbour(self, n: int) -> None:

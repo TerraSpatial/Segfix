@@ -162,8 +162,8 @@ def test_catalog_decimates_when_the_prompt_accepts(tmp_path):
 
     assert seen["spacing"] == pytest.approx(0.005, rel=0.2)
     assert seen["n_points"] == n_a + n_b
-    assert seen["suggested"] == density.DENSE_SPACING
-    assert cat.is_decimated and cat.voxel_size == density.DENSE_SPACING
+    assert seen["suggested"] == density.DEFAULT_VOXEL
+    assert cat.is_decimated and cat.voxel_size == density.DEFAULT_VOXEL
     # Far fewer points to draw and lasso, but both trees still there.
     assert cat.working_count < (n_a + n_b) / 4
     assert cat.count == n_a + n_b          # the file itself is untouched
@@ -702,3 +702,12 @@ def test_a_cloud_opened_outside_a_project_still_asks(tmp_path):
             path, density_prompt=lambda s, n, sug: (asked.append(sug), sug)[1]
         )
     assert len(asked) == 2
+
+
+def test_the_offered_voxel_is_coarser_than_the_cloud(tmp_path):
+    """3cm by default — a 2cm voxel on a 1.7cm cloud keeps 92% of the points,
+    all of the cost and none of the relief — but never finer than the points
+    themselves, which would thin nothing."""
+    assert density.suggest_voxel(0.005) == density.DEFAULT_VOXEL
+    assert density.suggest_voxel(0.017) == density.DEFAULT_VOXEL
+    assert density.suggest_voxel(0.05) == 0.05

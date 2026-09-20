@@ -165,7 +165,7 @@ rounded to half a metre would be meaningless, so it won't offer to downsample.
 ### Dense clouds
 
 On load segfix measures the cloud's typical point spacing. If points are closer
-than **2 cm** it offers to downsample for the session, one point per voxel (2 cm
+than **2 cm** it offers to downsample for the session, one point per voxel (3 cm
 by default, editable in the prompt), which is plenty to see and re-label a tree
 but a fraction of the points to draw and lasso. Choose **Keep Full Resolution**
 and nothing changes.

@@ -33,6 +33,13 @@ import numpy as np
 #: needs.
 DENSE_SPACING = 0.02
 
+#: Voxel size offered for a cloud that is denser than that. Deliberately
+#: coarser than the threshold: a 1.7cm cloud voxelised at 2cm keeps 92% of
+#: its points, which is all of the cost of the pass and none of the relief,
+#: while 3cm is still finer than any detail re-labelling a stem needs. The
+#: prompt's spin box takes anything else.
+DEFAULT_VOXEL = 0.03
+
 # How many points a spacing measurement aims to look at, and how many query
 # points it takes nearest-neighbour distances from. Both are "enough for a
 # median", not tuning knobs.
@@ -140,12 +147,11 @@ def estimate_spacing(coords: np.ndarray, rng=None) -> float:
 def suggest_voxel(spacing: float) -> float:
     """Voxel size to offer for a cloud measured at ``spacing``.
 
-    :data:`DENSE_SPACING` is both the threshold and the target: a cloud is
-    only offered decimation because it is finer than 2cm, and thinning it to
-    2cm is what makes it comparable to the clouds segfix already handles
-    comfortably.
+    :data:`DEFAULT_VOXEL` unless the cloud is coarser than that already, in
+    which case the offer is its own spacing — never a voxel that would be
+    finer than the points themselves, which would thin nothing.
     """
-    return DENSE_SPACING
+    return DEFAULT_VOXEL if spacing < DEFAULT_VOXEL else spacing
 
 
 def _run_starts(ordered: np.ndarray) -> np.ndarray:

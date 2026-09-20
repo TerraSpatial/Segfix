@@ -15,7 +15,7 @@ import pytest
 qtpy = pytest.importorskip("qtpy")
 from qtpy.QtWidgets import QApplication  # noqa: E402
 
-from segfix.density import DENSE_SPACING  # noqa: E402
+from segfix.density import DEFAULT_VOXEL  # noqa: E402
 from segfix.density_ui import DownsampleDialog  # noqa: E402
 
 
@@ -25,7 +25,7 @@ def _qapp():
 
 
 def _dialog():
-    dlg = DownsampleDialog(0.006, 128_000_000, DENSE_SPACING)
+    dlg = DownsampleDialog(0.006, 128_000_000, DEFAULT_VOXEL)
     dlg.show()
     QApplication.processEvents()
     return dlg
@@ -33,7 +33,7 @@ def _dialog():
 
 def test_downsample_button_returns_the_edited_voxel_size():
     dlg = _dialog()
-    assert dlg.spin.value() == pytest.approx(DENSE_SPACING)
+    assert dlg.spin.value() == pytest.approx(DEFAULT_VOXEL)
     dlg.spin.setValue(0.05)
     dlg.downsample_btn.click()
     assert dlg.voxel() == pytest.approx(0.05)

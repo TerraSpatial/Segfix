@@ -43,6 +43,7 @@ def _panel():
         on_unassign=action("unassign"),
         on_noise=action("noise"),
         _step=lambda step: fired.append(f"step {step:+d}"),
+        send_to_nth_neighbour=lambda n: fired.append(f"neighbour {n}"),
     )
     return panel
 
@@ -61,6 +62,8 @@ EXPECTED = {
     "A": "add", "S": "new tree", "D": "unassign", "F": "show unassigned",
     "X": "noise", "C": "cross section",
     "Z": "step -1", "V": "step +1",
+    "1": "neighbour 1", "2": "neighbour 2", "3": "neighbour 3",
+    "4": "neighbour 4", "5": "neighbour 5",
     "Esc": "move", "Space": "done",
     "Shift+Q": "draw section", "Shift+C": "lasso section",
 }

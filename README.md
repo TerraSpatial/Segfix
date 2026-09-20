@@ -247,6 +247,7 @@ to the right edge of the 3D view, next to the points they act on.
    | `R` / `T` | Tighten / loosen the cluster gap one step |
    | `Esc` | Back to camera / navigation |
    | `A` | Add selection to the current tree (missing branches, unassigned canopy) |
+   | `1`…`5` | Move selection into a neighbouring tree — the 1st to 5th button under **Move selection into a tree**, without switching tree first |
    | `S` | Split selection off as a new tree (it joins the queue unreviewed) |
    | `D` | Unassign selection, or the whole current tree if nothing is selected |
    | `X` | Mark selection as noise, or the whole current tree if nothing is selected (dismiss a bush/wall in one key) |
@@ -283,6 +284,12 @@ to the right edge of the 3D view, next to the points they act on.
 
    To **merge** an over-segmented fragment back in, lasso the whole fragment
    and press `A`; there is no separate merge key.
+
+   To hand a patch to the tree *next door* — the commonest fix where two
+   crowns overlap — the **Move selection into a tree** box lists the current
+   tree's neighbours as coloured buttons, and `1`…`5` press them. So the
+   whole correction is lasso, then one key, with the mouse never leaving the
+   canvas and the hand never leaving the keys.
 4. For a crowded canopy, two tools in the top bar cut the view down. Both fold
    into the same visibility as the 👁 column, so hidden points are also
    unselectable and the lasso can't grab through them:

@@ -58,6 +58,10 @@ from .viewer import (
 #: one click will bridge. Discrete steps rather than a free value because the
 #: useful range is multiplicative -- 1x to 2x is as big a change in what gets
 #: grabbed as 8x to 16x.
+#: How many neighbouring trees the number keys reach: 1-5 is as far as a
+#: left hand goes without moving. Further neighbours keep their button.
+NEIGHBOUR_KEYS = 5
+
 CLUSTER_GAP_FACTORS = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0)
 #: Start as tight as it goes: a first click is a small seed, and each repeat
 #: click on the same spot loosens it a step (see ClusterTool). Switching the
@@ -782,7 +786,9 @@ class SegFixWidget(QWidget):
         self.sel_info = QLabel()
         sel.addWidget(self.sel_info)
 
-        sel.addWidget(self._subheading("Move selection into a tree"))
+        sel.addWidget(
+            self._subheading(f"Move selection into a tree (1-{NEIGHBOUR_KEYS})")
+        )
         self.add_btn = QPushButton()
         self.add_btn.setIcon(icon("reassign"))
         self.add_btn.setIconSize(QSize(18, 18))
@@ -1787,7 +1793,11 @@ class SegFixWidget(QWidget):
             self.c.cloud, self.current, self.focus_margin.value()
         )
         # self.neighbour_label.setVisible(bool(neighbours))
-        for i, nid in enumerate(sorted(neighbours)):
+        # In the order the number keys use: 1 is the first button, so a
+        # patch can go to a neighbour without the hand leaving the keyboard
+        # (see send_to_nth_neighbour).
+        self._neighbour_ids = sorted(neighbours)
+        for i, nid in enumerate(self._neighbour_ids):
             rgba = colors_for_labels(
                 np.array([nid]), self.c.cloud.label_colors
             )[0]
@@ -1801,16 +1811,38 @@ class SegFixWidget(QWidget):
                 f"QPushButton {{ border: 2px solid rgb({r},{g},{b}); "
                 "border-radius: 3px; padding: 2px 4px; }"
             )
-            btn.setToolTip(f"Move the current selection to tree {nid}")
+            key = f" (key {i + 1})" if i < NEIGHBOUR_KEYS else ""
+            btn.setToolTip(f"Move the current selection to tree {nid}{key}")
             btn.clicked.connect(
                 lambda _checked=False, n=nid: self.on_send_to_neighbour(n)
             )
             self.neighbour_grid.addWidget(btn, i // 2, i % 2)
 
+    def send_to_nth_neighbour(self, n: int) -> None:
+        """Move the selection into the ``n``-th neighbouring tree, counting
+        from 1 in the order the buttons are shown.
+
+        The buttons themselves are a mouse away from a hand that is already
+        holding the mouse for the lasso; the number keys are not.
+        """
+        ids = getattr(self, "_neighbour_ids", [])
+        if not ids:
+            self.c.view.status = (
+                "No neighbouring trees to move the selection to"
+            )
+            return
+        if n > len(ids):
+            self.c.view.status = (
+                f"Only {len(ids)} neighbouring tree"
+                f"{'s' if len(ids) != 1 else ''}: keys 1-{len(ids)}"
+            )
+            return
+        self.on_send_to_neighbour(ids[n - 1])
+
     def _require_selection(self) -> np.ndarray | None:
         idx = self.c.selected_indices()
         if idx.size == 0:
-            self.c.view.status = "Select points first (L for lasso)"
+            self.c.view.status = "Select points first (Q for lasso)"
             return None
         return idx
 
@@ -1926,7 +1958,7 @@ class SegFixWidget(QWidget):
 #: right hand on the mouse. Everything in :func:`shortcut_bindings` is one of
 #: these (bar the legacy keys it also keeps).
 LEFT_HAND_KEYS = frozenset(
-    "QWERT" "ASDFG" "ZXCVB"
+    "QWERT" "ASDFG" "ZXCVB" "12345"
 ) | {"Esc", "Space", "Shift+Q", "Shift+W", "Shift+E", "Shift+C"}
 
 
@@ -1950,6 +1982,14 @@ def shortcut_bindings(panel) -> dict:
         "T": lambda: panel.step_cluster_gap(1),    # looser, as "]" is
         # edits
         "A": panel.on_add,
+        # 1-5: move the selection into a neighbouring tree, in the order
+        # its buttons are shown. Moving a patch to the tree next door is
+        # the commonest edit there is, and it was the one thing in the loop
+        # that could only be done by clicking.
+        **{
+            str(n): (lambda n=n: panel.send_to_nth_neighbour(n))
+            for n in range(1, NEIGHBOUR_KEYS + 1)
+        },
         "S": panel.on_create_new,
         "D": panel.on_unassign,
         "F": panel.show_unassigned.toggle,

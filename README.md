@@ -121,7 +121,7 @@ place, so the file stays in exactly the format `rayextract` produced.
 One caveat: noise (`X`) and unassigned points are **both** written back as black,
 so once such a file is reloaded the two are indistinguishable (segfix's
 `.segfix.json` sidecar still remembers which were noise for the current
-project). New trees created during editing (`N`, splits) get a deterministic
+project). New trees created during editing (`S`, splits) get a deterministic
 colour derived from their id.
 
 ### arbor output
@@ -240,35 +240,41 @@ to the right edge of the 3D view, next to the points they act on.
    | Key | Operation |
    |-----|-----------|
    | `Space` | Mark current tree done, jump to next unfinished |
-   | `←` / `→` | Previous / next tree (without marking done) |
-   | `L` | Lasso select |
-   | `Ctrl+L` | Lasso, but only points already in the current tree, grabs a clean patch out of an overlapping crown |
-   | `K` | Cluster select: click a point to take the connected patch of its tree; click the same spot again to loosen the gap and grow it |
-   | `[` / `]` | Tighten / loosen the cluster gap one step |
+   | `Z` / `V` | Previous / next tree (without marking done) |
+   | `Q` | Lasso select |
+   | `W` | Lasso, but only points already in the current tree, grabs a clean patch out of an overlapping crown |
+   | `E` | Cluster select: click a point to take the connected patch of its tree; click the same spot again to loosen the gap and grow it |
+   | `R` / `T` | Tighten / loosen the cluster gap one step |
    | `Esc` | Back to camera / navigation |
    | `A` | Add selection to the current tree (missing branches, unassigned canopy) |
-   | `N` | Split selection off as a new tree (it joins the queue unreviewed) |
-   | `U` | Unassign selection, or the whole current tree if nothing is selected |
+   | `S` | Split selection off as a new tree (it joins the queue unreviewed) |
+   | `D` | Unassign selection, or the whole current tree if nothing is selected |
    | `X` | Mark selection as noise, or the whole current tree if nothing is selected (dismiss a bush/wall in one key) |
    | `Delete` / `Backspace` | Same as `X` (mark noise) |
-   | `H` | Show/hide the unassigned + noise points |
+   | `F` | Show/hide the unassigned + noise points |
    | `C` | Cross section on/off |
-   | `Shift+L` | Draw a lasso-section outline |
+   | `Shift+Q` | Draw a lasso-section outline |
    | `Shift+C` | Lasso section on/off |
    | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo (also on the **Edit** menu) |
    | `Ctrl+S` | Save Project (also on the **File** menu) |
    | `Ctrl+O` | Open another project |
 
-   **Cluster (`K`)** is the other way to select: click a point and it takes the
+   Every key sits under the left hand, so the right one never leaves the
+   mouse: the tools on `Q` `W` `E` with the cluster gap beside them on
+   `R` `T`, the edits along the home row, and the queue on `Z` / `V` /
+   `Space`. The keys these replaced — `L`, `Ctrl+L`, `K`, `[`, `]`, `N`,
+   `U`, `H`, `Shift+L` and the arrow keys — still work.
+
+   **Cluster (`E`)** is the other way to select: click a point and it takes the
    patch of that point's tree that is physically connected to it. How wide a
    hole still counts as connected is the *gap*, in multiples of the cloud's
    point spacing. It starts at 1×, deliberately tight, so a first click is a
    small seed; click the same spot again to loosen it a step and grow the
-   patch (1× → 1.5× → 2× … up to 16×), or use `[` / `]`, or the **▾** beside
+   patch (1× → 1.5× → 2× … up to 16×), or use `R` / `T`, or the **▾** beside
    the Cluster button for a slider. Changing the gap re-runs your last click,
    so the patch grows or shrinks on screen as you go. The gap goes back to 1×
    when you switch Cluster off, or when the selection is cleared (after
-   `A`/`N`/`U`/`X`, a click on empty space, or moving to another tree).
+   `A`/`S`/`D`/`X`, a click on empty space, or moving to another tree).
 
    To move stray points *to a neighbour* instead, lasso them and click one of
    the **→ id** buttons in the Current tree panel, one per tree within
@@ -282,12 +288,12 @@ to the right edge of the 3D view, next to the points they act on.
    unselectable and the lasso can't grab through them:
    - **Cross section (`C`)**, a slab along X, Y or Z, set with two sliders.
    - **Lasso section (`Shift+C`)**, same idea, but the kept region is an
-     outline you draw (`Shift+L`, then drag). It's frozen into a point mask
+     outline you draw (`Shift+Q`, then drag). It's frozen into a point mask
      as you release, so the camera moves freely afterwards.
 
    Both reset when a new tree is loaded.
 5. Leftover unassigned points may hide missed trees: they're loaded alongside
-   every tree you open, so lasso one and press `N` to promote it to a tree of
+   every tree you open, so lasso one and press `S` to promote it to a tree of
    its own (it joins the queue unreviewed).
 6. **Save** (`Ctrl+S`) writes to the project copy, never the original import.
    It patches only the points whose label changed, in place, so the header and

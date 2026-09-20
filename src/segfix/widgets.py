@@ -4,7 +4,7 @@ The workflow is a review queue.  The table lists the trees currently loaded —
 the one picked in scene mode's "All Trees" plus its neighbours, or the whole
 file when it was loaded in one go.  Space marks the current tree done, flies
 the camera to the next unfinished one and jumps to it.  The current tree is
-always the implicit target: lasso points (L) and press A to add them to it,
+always the implicit target: lasso points (Q) and press A to add them to it,
 N to split a new tree off, U/X to unassign or trash.
 """
 
@@ -359,14 +359,14 @@ class SegFixWidget(QWidget):
         self.move_btn.setToolTip("Drag rotates the view")
         self.move_btn.clicked.connect(self.on_move_mode)
         interaction.addWidget(self.move_btn)
-        self.lasso_btn = QPushButton("Lasso (L)")
+        self.lasso_btn = QPushButton("Lasso (Q)")
         self.lasso_btn.setIcon(icon("lasso"))
         self.lasso_btn.setIconSize(QSize(18, 18))
         self.lasso_btn.setCheckable(True)
         self.lasso_btn.setToolTip("Drag selects points")
         self.lasso_btn.toggled.connect(self.on_toggle_lasso)
         interaction.addWidget(self.lasso_btn)
-        self.tree_lasso_btn = QPushButton("Lasso tree (Ctrl+L)")
+        self.tree_lasso_btn = QPushButton("Lasso tree (W)")
         self.tree_lasso_btn.setIcon(icon("lasso"))
         self.tree_lasso_btn.setIconSize(QSize(18, 18))
         self.tree_lasso_btn.setCheckable(True)
@@ -377,7 +377,7 @@ class SegFixWidget(QWidget):
         )
         self.tree_lasso_btn.toggled.connect(self.on_toggle_tree_lasso)
         interaction.addWidget(self.tree_lasso_btn)
-        self.cluster_btn = QPushButton("Cluster (K)")
+        self.cluster_btn = QPushButton("Cluster (E)")
         self.cluster_btn.setIcon(icon("grow"))
         self.cluster_btn.setIconSize(QSize(18, 18))
         self.cluster_btn.setCheckable(True)
@@ -441,7 +441,7 @@ class SegFixWidget(QWidget):
         # A plain checkbox, like the Cross section / Lasso section "On"
         # toggles it sits next to — not the odd-one-out checkable button it
         # used to be.
-        self.show_unassigned = QCheckBox("Show unassigned (H)")
+        self.show_unassigned = QCheckBox("Show unassigned (F)")
         self.show_unassigned.setChecked(True)
         self.show_unassigned.setToolTip(
             "Show or hide the unassigned + noise points"
@@ -539,7 +539,7 @@ class SegFixWidget(QWidget):
         )
         self.lasso_section_enable.toggled.connect(self._on_lasso_section_toggled)
         lsec.addWidget(self.lasso_section_enable)
-        self.section_draw_btn = QPushButton("Draw (Shift+L)")
+        self.section_draw_btn = QPushButton("Draw (Shift+Q)")
         self.section_draw_btn.setIcon(icon("lasso"))
         self.section_draw_btn.setIconSize(QSize(18, 18))
         self.section_draw_btn.setCheckable(True)
@@ -643,8 +643,8 @@ class SegFixWidget(QWidget):
         sel.addWidget(self.neighbour_scroll)
 
         sel.addWidget(self._subheading("Remove selection from its tree"))
-        self._button(sel, "Split off as new tree (N)", self.on_create_new, "new")
-        self._button(sel, "Unassign (U)", self.on_unassign, "unassign")
+        self._button(sel, "Split off as new tree (S)", self.on_create_new, "new")
+        self._button(sel, "Unassign (D)", self.on_unassign, "unassign")
         self._button(sel, "Noise (X)", self.on_noise, "noise")
         sel_box.show()
         sel_box.raise_()
@@ -755,8 +755,8 @@ class SegFixWidget(QWidget):
         lay.addWidget(self.cluster_gap_label)
         hint = QLabel(
             "Looser bridges wider holes, so one click grabs more of a tree.\n"
-            "Click the same spot again, or press ], to loosen a step;\n"
-            "[ tightens. The last cluster click updates live.\n"
+            "Click the same spot again, or press T, to loosen a step;\n"
+            "R tightens. The last cluster click updates live.\n"
             f"Back to {DEFAULT_CLUSTER_GAP_FACTOR:g}× when Cluster is switched off\n"
             "or the selection is cleared."
         )
@@ -1116,7 +1116,7 @@ class SegFixWidget(QWidget):
         if changed and fly and tid is not None:
             self._fly_to(tid)
             self.c.view.status = (
-                f"Tree {tid} - lasso (L) then A/N/U/X to fix, "
+                f"Tree {tid} - lasso (Q) then A/S/D/X to fix, "
                 "Space to mark done and continue"
             )
 
@@ -1540,7 +1540,7 @@ class SegFixWidget(QWidget):
         had_selection, self._had_selection = self._had_selection, idx.size > 0
         if idx.size == 0:
             if had_selection:
-                # The selection just went away (A/N/U/X, an empty-space
+                # The selection just went away (A/S/D/X, an empty-space
                 # click, another tree, a reload): whatever the cluster
                 # clicks loosened the gap to was for that selection.
                 # Watching for the *transition* keeps a gap set on the
@@ -1670,7 +1670,7 @@ class SegFixWidget(QWidget):
             return idx
         if self.current is None:
             self.c.view.status = (
-                f"Select points to {verb} (L), or pick a tree first"
+                f"Select points to {verb} (Q), or pick a tree first"
             )
             return None
         return np.flatnonzero(self.c.cloud.labels == self.current)
@@ -1727,38 +1727,74 @@ class SegFixWidget(QWidget):
         self.c.view.status = f"Saved → {path}"
 
 
-def bind_shortcuts(window, panel: SegFixWidget) -> None:
-    """One-key bindings so the whole review loop stays on the canvas.
+#: Keys a left hand reaches without moving off its home position, with the
+#: right hand on the mouse. Everything in :func:`shortcut_bindings` is one of
+#: these (bar the legacy keys it also keeps).
+LEFT_HAND_KEYS = frozenset(
+    "QWERT" "ASDFG" "ZXCVB"
+) | {"Esc", "Space", "Shift+Q", "Shift+W", "Shift+E", "Shift+C"}
 
-    Bound on the main window as ``QShortcut``s; ``WindowShortcut`` context so
-    they fire wherever focus sits in the window (canvas or a dock).
+
+def shortcut_bindings(panel) -> dict:
+    """``{key: what it does}`` for the whole review loop.
+
+    Separate from :func:`bind_shortcuts` so the map itself can be read and
+    tested without a window to hang ``QShortcut``s on.
     """
-    from qtpy.QtGui import QKeySequence, QShortcut
-
+    # Everything sits under the left hand, because the right one is on the
+    # mouse for the whole review loop: the tools on QWE with the cluster gap
+    # beside them, the edits on the home row, and the rest on ZXCV. Reaching
+    # for L, K, N, U, H or the bracket keys meant letting go of the mouse or
+    # looking down, dozens of times a tree.
     bindings = {
+        # tools
+        "Q": panel.lasso_btn.toggle,
+        "W": panel.tree_lasso_btn.toggle,
+        "E": panel.cluster_btn.toggle,
+        "R": lambda: panel.step_cluster_gap(-1),   # tighter, as "[" is
+        "T": lambda: panel.step_cluster_gap(1),    # looser, as "]" is
+        # edits
+        "A": panel.on_add,
+        "S": panel.on_create_new,
+        "D": panel.on_unassign,
+        "F": panel.show_unassigned.toggle,
+        "X": panel.on_noise,
+        "C": panel.cross_enable.toggle,
+        # moving through the queue
+        "Esc": panel.on_move_mode,
+        "Space": panel.on_done_next,
+        "Z": lambda: panel._step(-1),
+        "V": lambda: panel._step(1),
+        "Shift+Q": panel.section_draw_btn.toggle,
+        "Shift+C": panel.lasso_section_enable.toggle,
+        # The keys these replaced, still bound: a hand that already knows
+        # them shouldn't have to unlearn anything.
         "L": panel.lasso_btn.toggle,
         "Ctrl+L": panel.tree_lasso_btn.toggle,
         "K": panel.cluster_btn.toggle,
         "[": lambda: panel.step_cluster_gap(-1),
         "]": lambda: panel.step_cluster_gap(1),
-        "Esc": panel.on_move_mode,
-        "Space": panel.on_done_next,
         "Left": lambda: panel._step(-1),
         "Right": lambda: panel._step(1),
-        "A": panel.on_add,
         "N": panel.on_create_new,
         "U": panel.on_unassign,
-        "X": panel.on_noise,
         "H": panel.show_unassigned.toggle,
-        "C": panel.cross_enable.toggle,
         "Shift+L": panel.section_draw_btn.toggle,
-        "Shift+C": panel.lasso_section_enable.toggle,
         # Ctrl+Z / Ctrl+Shift+Z / Ctrl+S are the Edit/File menu actions'
         # shortcuts now (app._build_menus) — binding them here too would make
         # Qt see an ambiguous overload and fire neither.
     }
+    return bindings
+
+
+def bind_shortcuts(window, panel: SegFixWidget) -> None:
+    """Bind :func:`shortcut_bindings` on the main window as ``QShortcut``s;
+    ``WindowShortcut`` context, so they fire wherever focus sits in the
+    window (canvas or a dock)."""
+    from qtpy.QtGui import QKeySequence, QShortcut
+
     panel._shortcuts = []  # keep refs alive
-    for key, fn in bindings.items():
+    for key, fn in shortcut_bindings(panel).items():
         sc = QShortcut(QKeySequence(key), window)
         sc.activated.connect(fn)
         panel._shortcuts.append(sc)

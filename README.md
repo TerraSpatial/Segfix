@@ -287,13 +287,16 @@ to the right edge of the 3D view, next to the points they act on.
 
    To hand a patch to the tree *next door* — the commonest fix where two
    crowns overlap — the **Move selection into a tree** box lists the current
-   tree's neighbours as coloured buttons, closest first, each wearing the
-   key that presses it (`1`…`5`). So the whole correction is lasso, then one
-   key, with the mouse never leaving the canvas and the hand never leaving
-   the keys. Hovering a button says how close that tree comes. Buttons that
-   need a selection are greyed out until there is one; **Unassign** and
-   **Noise** stay live, since with nothing selected they act on the whole
-   current tree.
+   tree's neighbours as coloured buttons, closest first. The nearest five
+   sit at the top and never scroll, each wearing the keycap that presses it
+   (`1`…`5`); any further neighbours scroll in the box below, and are a
+   click away. So the whole correction is lasso, then one key, with the
+   mouse never leaving the canvas and the hand never leaving the keys.
+   Hovering a button says how close that tree comes. **Listed above: trees
+   within … m** under the buttons is what decides which trees appear there
+   at all. Buttons that need a selection are greyed out until there is one;
+   **Unassign** and **Noise** stay live, since with nothing selected they
+   act on the whole current tree.
 4. For a crowded canopy, two tools in the top bar cut the view down. Both fold
    into the same visibility as the 👁 column, so hidden points are also
    unselectable and the lasso can't grab through them:

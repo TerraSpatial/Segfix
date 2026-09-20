@@ -100,24 +100,28 @@ def test_with_no_neighbours_the_keys_say_so(panel):
     assert "No neighbouring trees" in said[-1]
 
 
-def _button_texts(panel):
-    grid = panel.neighbour_grid
-    return [grid.itemAt(i).widget().text().strip() for i in range(grid.count())]
+def _buttons(grid):
+    return [grid.itemAt(i).widget() for i in range(grid.count())]
 
 
-def test_each_button_wears_the_key_that_presses_it(panel):
+def test_each_keyed_button_wears_the_key_that_presses_it(panel):
+    """The key is a drawn keycap in the icon, not a second number in the
+    text: the button already carries the tree id."""
     p, _seg, _cloud, _said = panel
-    from segfix.widgets import NEIGHBOUR_KEYCAPS
+    keyed = _buttons(p.keyed_grid)
 
-    assert _button_texts(p) == [f"{NEIGHBOUR_KEYCAPS[0]} 2", f"{NEIGHBOUR_KEYCAPS[1]} 3"]
+    assert [b.text().strip() for b in keyed] == ["2", "3"]
+    assert [b.property("segfix_key") for b in keyed] == [1, 2]
+    assert not any(b.icon().isNull() for b in keyed)
+    assert ", key 1" in keyed[0].toolTip()
 
 
-def test_a_neighbour_past_the_keys_wears_no_number(panel):
+def test_the_keyed_buttons_never_scroll_out_of_sight(panel):
     """A seventh tree still gets its button, and still works with the
     mouse; it just has no key to advertise."""
     p, seg, _cloud, _said = panel
     from segfix.model import PointCloud
-    from segfix.widgets import NEIGHBOUR_KEYCAPS, NEIGHBOUR_KEYS
+    from segfix.widgets import NEIGHBOUR_KEYS
 
     # One tree in the middle, touching six others.
     rng = np.random.default_rng(1)
@@ -134,11 +138,19 @@ def test_a_neighbour_past_the_keys_wears_no_number(panel):
     seg.set_cloud(crowded)
     p._set_current(1, fly=False)
 
-    texts = _button_texts(p)
-    assert len(texts) == NEIGHBOUR_KEYS + 1
-    for text, keycap in zip(texts, NEIGHBOUR_KEYCAPS):
-        assert text.startswith(keycap)
-    assert texts[NEIGHBOUR_KEYS][0] not in NEIGHBOUR_KEYCAPS  # just the id
+    keyed, extra = _buttons(p.keyed_grid), _buttons(p.neighbour_grid)
+    # The five a key reaches stay put; the rest go in the scrolling box.
+    assert len(keyed) == NEIGHBOUR_KEYS and len(extra) == 1
+    assert [b.property("segfix_key") for b in keyed] == [1, 2, 3, 4, 5]
+    assert extra[0].property("segfix_key") is None
+    assert "key" not in extra[0].toolTip()
+    assert not p.neighbour_scroll.isHidden()  # there is an overflow to scroll
+
+
+def test_no_scroll_box_when_every_neighbour_has_a_key(panel):
+    p, _seg, _cloud, _said = panel
+    assert len(p._neighbour_ids) == 2
+    assert p.neighbour_scroll.isHidden()
 
 
 def test_the_keys_reach_the_nearest_trees_not_the_lowest_numbered(panel):

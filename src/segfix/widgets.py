@@ -16,8 +16,8 @@ import threading
 import time
 
 import numpy as np
-from qtpy.QtCore import QSize, Qt
-from qtpy.QtGui import QBrush, QColor, QIcon, QPixmap
+from qtpy.QtCore import QRectF, QSize, Qt
+from qtpy.QtGui import QBrush, QColor, QIcon, QPainter, QPen, QPixmap
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -62,11 +62,29 @@ from .viewer import (
 #: left hand goes without moving. Further neighbours keep their button.
 NEIGHBOUR_KEYS = 5
 
-#: The key each of those buttons answers to, drawn on the button.
-#: Circled digits, not the keycap emoji (1\ufe0f\u20e3): Qt renders that
-#: sequence as nothing at all with Noto Color Emoji and as an empty box
-#: without it, while these are in every UI font we have met.
-NEIGHBOUR_KEYCAPS = ("\u2460", "\u2461", "\u2462", "\u2463", "\u2464")
+def key_badge(digit: str, colour: QColor, size: int = 16) -> QPixmap:
+    """A little keycap with ``digit`` on it, for the button that key presses.
+
+    Drawn rather than typed: the keycap emoji (1\ufe0f\u20e3) renders as
+    nothing at all in Qt with Noto Color Emoji and as an empty box without
+    it, and a bare digit beside the tree id reads as a second number rather
+    than as a key.
+    """
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(QPen(colour, 1.2))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(0.9, 0.9, size - 1.8, size - 1.8), 3.5, 3.5)
+    font = p.font()
+    font.setPixelSize(int(size * 0.66))
+    font.setBold(True)
+    p.setFont(font)
+    p.setPen(colour)
+    p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, digit)
+    p.end()
+    return pm
 
 CLUSTER_GAP_FACTORS = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0)
 #: Start as tight as it goes: a first click is a small seed, and each repeat
@@ -441,7 +459,10 @@ class SegFixWidget(QWidget):
     HIDE_COL = 3
     FADE_COL = 4
     OVERLAY_W = 280  # fixed width of the "Current tree" box floating on the view
-    NEIGHBOUR_ROWS = 4  # neighbour buttons visible before the list scrolls
+    # Rows of *unkeyed* neighbours visible before the list scrolls. The
+    # keyed ones sit above it and never scroll, so this is three rather than
+    # four and the box is the height it always was.
+    NEIGHBOUR_ROWS = 3
 
     def __init__(self, controller: SegFixController):
         super().__init__()
@@ -793,29 +814,20 @@ class SegFixWidget(QWidget):
         sel.addWidget(self.sel_info)
 
         sel.addWidget(
-            self._subheading(f"Move selection into a tree (1-{NEIGHBOUR_KEYS})")
+            self._subheading("Move selection into a tree")
         )
         self.add_btn = QPushButton()
         self.add_btn.setIcon(icon("reassign"))
         self.add_btn.setIconSize(QSize(18, 18))
         self.add_btn.clicked.connect(self.on_add)
         sel.addWidget(self.add_btn)
-        neighbour_header = QHBoxLayout()
-
-        neighbour_header.addWidget(QLabel("Neighbour reach"))
-        self.focus_margin = QDoubleSpinBox()
-        self.focus_margin.setRange(0.1, 50.0)
-        self.focus_margin.setDecimals(1)
-        self.focus_margin.setSingleStep(0.5)
-        self.focus_margin.setValue(1.0)
-        self.focus_margin.setSuffix(" m")
-        self.focus_margin.setToolTip(
-            "Neighbour reach: trees whose points come within this distance "
-            "of the current tree's points count as neighbours."
-        )
-        self.focus_margin.valueChanged.connect(self._update_neighbour_picker)
-        neighbour_header.addWidget(self.focus_margin)
-        sel.addLayout(neighbour_header)
+        # The keyed neighbours sit above the scroll area, always visible:
+        # they are the ones a key can reach, so scrolling them out of sight
+        # hides the fast path. The rest scroll below.
+        self.keyed_grid = QGridLayout()
+        self.keyed_grid.setContentsMargins(0, 0, 0, 0)
+        self.keyed_grid.setSpacing(4)
+        sel.addLayout(self.keyed_grid)
         # The neighbour buttons go in a 2-column grid inside a fixed-height
         # scroll area, so the whole "Current tree" box stays one size no
         # matter how many neighbours the current tree has — extras scroll
@@ -841,6 +853,24 @@ class SegFixWidget(QWidget):
             self.NEIGHBOUR_ROWS * row_h + (self.NEIGHBOUR_ROWS - 1) * 4
         )
         sel.addWidget(self.neighbour_scroll)
+        # Under the buttons it decides the contents of, not above them: this
+        # is what says which trees are listed at all.
+        reach_row = QHBoxLayout()
+        reach_row.addWidget(QLabel("Listed above: trees within"))
+        self.focus_margin = QDoubleSpinBox()
+        self.focus_margin.setRange(0.1, 50.0)
+        self.focus_margin.setDecimals(1)
+        self.focus_margin.setSingleStep(0.5)
+        self.focus_margin.setValue(1.0)
+        self.focus_margin.setSuffix(" m")
+        self.focus_margin.setToolTip(
+            "Neighbour reach: trees whose points come within this distance "
+            "of the current tree's points are listed above."
+        )
+        self.focus_margin.valueChanged.connect(self._update_neighbour_picker)
+        reach_row.addWidget(self.focus_margin)
+        reach_row.addStretch(1)
+        sel.addLayout(reach_row)
 
         sel.addWidget(self._subheading("Remove selection from its tree"))
         self.split_btn = self._button(
@@ -867,11 +897,16 @@ class SegFixWidget(QWidget):
         # palette — they're translucent panels over the 3-D view).
         theme.subscribe(self._apply_overlay_theme)
         # Freeze the "Current tree" box at its natural size now (empty
-        # neighbour grid, theme applied) so it never resizes later — the
-        # neighbour scroll area absorbs every change in neighbour count.
+        # grids, theme applied) so it never resizes later — the neighbour
+        # scroll area absorbs every change in neighbour count. The keyed
+        # buttons are outside that scroll area, so their rows have to be
+        # reserved here or they push the box over its own edge.
+        keyed_rows = -(-NEIGHBOUR_KEYS // 2)  # two buttons to a row
+        row_h = self.add_btn.sizeHint().height()
         self._current_tree_overlay.setFixedSize(
             self.OVERLAY_W,
-            self._current_tree_overlay.sizeHint().height() + 8,
+            self._current_tree_overlay.sizeHint().height() + 8
+            + keyed_rows * (row_h + 4),
         )
         self._on_cloud_changed()
 
@@ -1808,11 +1843,12 @@ class SegFixWidget(QWidget):
         """Rebuild the "send selection to neighbour" button row for the
         current tree — a quicker path than switching current tree and
         pressing Add when moving a patch to an adjacent tree."""
-        while self.neighbour_grid.count():
-            item = self.neighbour_grid.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
+        for grid in (self.keyed_grid, self.neighbour_grid):
+            while grid.count():
+                item = grid.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
 
         from . import analysis
 
@@ -1825,24 +1861,32 @@ class SegFixWidget(QWidget):
         # with a dozen neighbours, that is nobody's idea of the right five.
         self._neighbour_ids = sorted(near, key=lambda n: (near[n], n))
         self._neighbour_btns = []
+        text_colour = self.palette().buttonText().color()
         for i, nid in enumerate(self._neighbour_ids):
             rgba = colors_for_labels(
                 np.array([nid]), self.c.cloud.label_colors
             )[0]
             r, g, b = (int(v * 255) for v in rgba[:3])
-            keycap = (
-                f"{NEIGHBOUR_KEYCAPS[i]} " if i < NEIGHBOUR_KEYS else ""
-            )
-            btn = QPushButton(f" {keycap}{nid}")
-            swatch = QPixmap(12, 12)
-            swatch.fill(QColor(r, g, b))
-            btn.setIcon(QIcon(swatch))
-            btn.setIconSize(QSize(12, 12))
+            keyed = i < NEIGHBOUR_KEYS
+            btn = QPushButton(f" {nid}")
+            btn.setProperty("segfix_key", i + 1 if keyed else None)
+            # The tree's colour is the button's border either way. A keyed
+            # button spends its icon on the key instead of repeating that
+            # colour as a swatch, so the two numbers the button used to
+            # carry — key and tree id — no longer read as a pair.
+            if keyed:
+                btn.setIcon(QIcon(key_badge(str(i + 1), text_colour)))
+                btn.setIconSize(QSize(16, 16))
+            else:
+                swatch = QPixmap(12, 12)
+                swatch.fill(QColor(r, g, b))
+                btn.setIcon(QIcon(swatch))
+                btn.setIconSize(QSize(12, 12))
             btn.setStyleSheet(
                 f"QPushButton {{ border: 2px solid rgb({r},{g},{b}); "
                 "border-radius: 3px; padding: 2px 4px; }"
             )
-            key = f", key {i + 1}" if i < NEIGHBOUR_KEYS else ""
+            key = f", key {i + 1}" if keyed else ""
             btn.setToolTip(
                 f"Move the current selection to tree {nid} "
                 f"({near[nid]:.2f} m away{key})"
@@ -1851,7 +1895,13 @@ class SegFixWidget(QWidget):
             btn.clicked.connect(
                 lambda _checked=False, n=nid: self.on_send_to_neighbour(n)
             )
-            self.neighbour_grid.addWidget(btn, i // 2, i % 2)
+            grid = self.keyed_grid if keyed else self.neighbour_grid
+            row = i // 2 if keyed else (i - NEIGHBOUR_KEYS) // 2
+            grid.addWidget(btn, row, i % 2 if keyed else (i - NEIGHBOUR_KEYS) % 2)
+        # Nothing to scroll to when every neighbour has a key of its own.
+        self.neighbour_scroll.setVisible(
+            len(self._neighbour_ids) > NEIGHBOUR_KEYS
+        )
         self._refresh_selection_actions()
 
     def send_to_nth_neighbour(self, n: int) -> None:

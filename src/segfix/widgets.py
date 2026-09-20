@@ -848,7 +848,7 @@ class SegFixWidget(QWidget):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.neighbour_scroll.viewport().setAutoFillBackground(False)
-        row_h = self.add_btn.sizeHint().height()
+        row_h = self._neighbour_row_height()
         self.neighbour_scroll.setFixedHeight(
             self.NEIGHBOUR_ROWS * row_h + (self.NEIGHBOUR_ROWS - 1) * 4
         )
@@ -856,7 +856,12 @@ class SegFixWidget(QWidget):
         # Under the buttons it decides the contents of, not above them: this
         # is what says which trees are listed at all.
         reach_row = QHBoxLayout()
-        reach_row.addWidget(QLabel("Listed above: trees within"))
+        reach_label = QLabel("Trees within")
+        reach_label.setToolTip(
+            "Which trees are listed above: those whose points come within "
+            "this distance of the current tree's points."
+        )
+        reach_row.addWidget(reach_label)
         self.focus_margin = QDoubleSpinBox()
         self.focus_margin.setRange(0.1, 50.0)
         self.focus_margin.setDecimals(1)
@@ -869,6 +874,7 @@ class SegFixWidget(QWidget):
         )
         self.focus_margin.valueChanged.connect(self._update_neighbour_picker)
         reach_row.addWidget(self.focus_margin)
+        reach_row.addWidget(QLabel("of this tree"))
         reach_row.addStretch(1)
         sel.addLayout(reach_row)
 
@@ -902,7 +908,7 @@ class SegFixWidget(QWidget):
         # buttons are outside that scroll area, so their rows have to be
         # reserved here or they push the box over its own edge.
         keyed_rows = -(-NEIGHBOUR_KEYS // 2)  # two buttons to a row
-        row_h = self.add_btn.sizeHint().height()
+        row_h = self._neighbour_row_height()
         self._current_tree_overlay.setFixedSize(
             self.OVERLAY_W,
             self._current_tree_overlay.sizeHint().height() + 8
@@ -1799,6 +1805,27 @@ class SegFixWidget(QWidget):
             f"Selected: {idx.size:,} points across {len(trees)} tree(s)"
         )
         self._refresh_selection_actions()
+
+    def _neighbour_row_height(self) -> int:
+        """How tall one row of neighbour buttons really is.
+
+        Measured from a button styled like the real ones, not from a plain
+        one: the 2px coloured border and padding make them several pixels
+        taller, and reserving the plain height sliced the bottom row of the
+        scroll box in half.
+        """
+        cached = getattr(self, "_neighbour_row_h", None)
+        if cached is None:
+            probe = QPushButton(" 000")
+            probe.setIcon(QIcon(key_badge("1", QColor("white"))))
+            probe.setIconSize(QSize(16, 16))
+            probe.setStyleSheet(
+                "QPushButton { border: 2px solid gray; border-radius: 3px; "
+                "padding: 2px 4px; }"
+            )
+            cached = self._neighbour_row_h = probe.sizeHint().height()
+            probe.deleteLater()
+        return cached
 
     def _refresh_selection_actions(self) -> None:
         """Enable only what the current state can actually do.

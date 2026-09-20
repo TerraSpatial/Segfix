@@ -124,8 +124,8 @@ def test_the_voxel_path_matches_the_exact_one_on_well_separated_blobs():
 
 
 def test_points_sharing_a_voxel_always_share_a_component():
-    """The guarantee the reduction rests on: a voxel is eps/4 across, so its
-    diagonal is 0.43 eps and everything in it is one blob by definition."""
+    """The guarantee the reduction rests on: a voxel is eps/3 across, so its
+    diagonal is 0.58 eps and everything in it is one blob by definition."""
     coords, _ = _two_blobs(15_000, gap_between=0.5)
     eps = 0.05
     comp = analysis.connected_components_within(coords, eps)

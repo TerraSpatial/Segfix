@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 
 import numpy as np
 from qtpy.QtCore import QSize, Qt
@@ -63,6 +65,21 @@ CLUSTER_GAP_FACTORS = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0)
 #: SegFixWidget.reset_cluster_gap.
 DEFAULT_CLUSTER_GAP_FACTOR = 1.0
 
+#: How many (tree, gap) labellings SegFixController keeps. One tree's full
+#: ladder is len(CLUSTER_GAP_FACTORS) of them, so this is the last seven-odd
+#: trees -- far more than a review revisits, and a ceiling on what the
+#: prefetch can accumulate: a labelling is 4 bytes a point, so a plot walked
+#: tree by tree without a reload would otherwise climb without limit.
+CLUSTER_CACHE_ENTRIES = 64
+
+#: Threads the gap-ladder prefetch runs on. One is not enough on a big tree:
+#: a labelling there takes about as long as a user takes to click again, so a
+#: single worker walks the ladder at exactly the speed it is being chased and
+#: never gets ahead. Three pull from the same queue in priority order, which
+#: puts it comfortably in front on a 300k-point tree, and SciPy drops the GIL
+#: for all of this so they cost cores rather than responsiveness.
+CLUSTER_PREFETCH_WORKERS = 3
+
 
 class SegFixController:
     """Holds the editable cloud + the 3D view, and applies operations."""
@@ -95,8 +112,21 @@ class SegFixController:
         # connected-component labellings, one per tree and gap, each built
         # the first time that combination is asked for and kept thereafter.
         self._cluster_spacing: float | None = None
-        #: (tree label, gap) -> (point indices, component id per index)
+        #: (tree label, gap) -> (point indices, component id per index).
+        #: Written from the prefetch worker as well as from here, so every
+        #: mutation goes through _cache_cluster/_cluster_cc_get under
+        #: _cluster_lock -- a plain read of one key needs no lock, but the
+        #: eviction below walks the dict and must not run beside an insert.
         self._cluster_cc: dict[tuple[int, float], tuple] = {}
+        self._cluster_lock = threading.Lock()
+        #: The gap-ladder prefetch (see _start_cluster_prefetch): the worker
+        #: warming the rest of the ladder for the tree last clicked, the tree
+        #: it is doing, and the flag that tells it to give up.
+        self._prefetch: tuple[threading.Thread, ...] = ()
+        self._prefetch_label: int | None = None
+        self._prefetch_stop = threading.Event()
+        #: Off in tests that count labellings, on in the app.
+        self.cluster_prefetch = True
         # How many point spacings of empty space a cluster click bridges; the
         # panel's "Cluster gap" popover sets it. A mode choice like
         # lasso_filter, so it survives set_cloud.
@@ -118,6 +148,7 @@ class SegFixController:
         was_lasso, was_cluster = self.lasso.armed, self.cluster.armed
         self.lasso.set_armed(False)
         self.cluster.set_armed(False)
+        self._stop_cluster_prefetch()
         self._cluster_spacing, self._cluster_cc = None, {}  # for the old points
         self.cloud = cloud
         self.focus_label = focus
@@ -180,20 +211,175 @@ class SegFixController:
         where it was. Wiping the cache whenever the gap moved meant every one
         of those recomputed the whole tree's blobs from scratch — seconds
         each, and the same answer as two clicks ago.
-        """
-        from . import analysis
 
+        Which points *are* the tree is re-read every time and the entry is
+        only used if it still agrees, because the other half of the workflow
+        edits: select a patch, press A or N, click again. An entry cached
+        before the edit describes a tree that no longer exists — clicking
+        tree 1 after splitting half of it off as tree 3 kept handing back
+        all of the original points, tree 3's included, so the next A pulled
+        them straight back in. The check is two O(n) passes against a
+        labelling the KD-tree work dwarfs, and it keeps the entries for the
+        trees the edit did not touch — and the pre-edit ones across an undo,
+        which restores the very array they were built for.
+        """
+        same = np.flatnonzero(self.cloud.labels == seed_label)
         key = (seed_label, float(gap))
         cached = self._cluster_cc.get(key)
-        if cached is None:
-            same = np.flatnonzero(self.cloud.labels == seed_label)
-            comp = (
-                analysis.connected_components_within(self.view.coords[same], gap)
-                if same.size else np.empty(0, np.int64)
-            )
-            cached = (same, comp)
-            self._cluster_cc[key] = cached
+        if cached is None or not np.array_equal(cached[0], same):
+            cached = (same, self._label_blobs(self.view.coords[same], gap))
+            self._cache_cluster(key, cached)
         return cached
+
+    @staticmethod
+    def _label_blobs(points: np.ndarray, gap: float) -> np.ndarray:
+        """One component id per point -- the expensive bit, and the only bit
+        the prefetch worker runs, so it touches nothing but its arguments."""
+        from . import analysis
+
+        if not points.size:
+            return np.empty(0, np.int64)
+        return analysis.connected_components_within(points, gap)
+
+    def _cache_cluster(self, key, value) -> None:
+        """Store a labelling, evicting the oldest once the cache is full.
+
+        The GUI thread and every prefetch worker insert here. Python would
+        make each assignment safe on its own, but the eviction reads the
+        insertion order back out, and that cannot run beside another
+        thread's insert.
+        """
+        with self._cluster_lock:
+            self._cluster_cc.pop(key, None)  # re-insert: youngest again
+            self._cluster_cc[key] = value
+            while len(self._cluster_cc) > CLUSTER_CACHE_ENTRIES:
+                self._cluster_cc.pop(next(iter(self._cluster_cc)))
+
+    def _start_cluster_prefetch(self, seed_label: int, same: np.ndarray) -> None:
+        """Warm the rest of the gap ladder for ``seed_label`` off the GUI thread.
+
+        A click is the start of a sequence, not the end of one: the tool's
+        whole idiom is to click again to loosen, and ] and the slider walk
+        the same ladder. Each of those steps is a gap the cache has never
+        been asked for, so every one of them used to stop the GUI thread for
+        as long as the labelling took -- a fifth of a second on a 120k-point
+        tree, more on a big one, once per step.
+
+        So the click hands the ladder to a set of workers and the steps
+        become cache hits. They get a snapshot -- the tree's indices, and
+        its points copied out -- and compute on that alone, never reading
+        the cloud or the view, because an edit may land while they run. A
+        labelling that an edit has overtaken is not a hazard either way:
+        _cluster_component re-reads the membership and ignores any entry
+        that no longer matches.
+
+        SciPy does this work with the GIL released (a Python thread beside
+        query_pairs, the KD-tree build and connected_components measured
+        88-103% of its idle rate), so the warming really is off the GUI
+        thread rather than merely off the call stack.
+
+        Clicking and then stepping to the top of the ladder every 400ms, the
+        time the GUI thread spends blocked across the whole sequence:
+
+        ==============  ==========  =========
+        tree            before      after
+        ==============  ==========  =========
+        120k points     1.95s, 9/9  0.28s, 1/9
+        300k points     5.23s, 9/9  1.22s, 2/9
+        ==============  ==========  =========
+
+        (steps over 100ms out of the nine). What is left is the first click,
+        which has nothing warmed yet and never will, and on a big tree the
+        step right behind it, which arrives before the first labelling the
+        workers started has finished.
+        """
+        spacing = self._cluster_spacing
+        if not self.cluster_prefetch or spacing is None or same.size <= 1:
+            return
+        if self._prefetch_label == seed_label and self._prefetch:
+            if any(worker.is_alive() for worker in self._prefetch):
+                return  # already walking this tree's ladder
+        factors = list(CLUSTER_GAP_FACTORS)
+        here = (
+            factors.index(self.cluster_gap_factor)
+            if self.cluster_gap_factor in factors
+            else 0
+        )
+        # Loosening is the move the tool is built around, so the steps above
+        # the click come first, nearest first; the tighter ones follow for []
+        # and the slider going back down.
+        order = factors[here + 1:] + factors[:here][::-1]
+
+        def missing(factor: float) -> bool:
+            cached = self._cluster_cc.get((seed_label, float(spacing * factor)))
+            return cached is None or not np.array_equal(cached[0], same)
+
+        # Every gap step calls back in here, and by the end of a ladder walk
+        # there is nothing left to do; without this a step would keep
+        # starting workers whose only job was to find the cache already warm.
+        order = [factor for factor in order if missing(factor)]
+        if not order:
+            return
+        points = self.view.coords[same]  # a copy, so the workers share it
+        stop = threading.Event()
+        self._prefetch_stop.set()  # whatever was running, stand down
+        self._prefetch_stop = stop
+
+        # One queue, taken in order, so the workers between them always hold
+        # the nearest gaps the user has not reached rather than a fixed slice
+        # each -- the tail of the ladder is the cheapest part and would
+        # otherwise finish first while the next step along is still missing.
+        pending, turn = iter(order), threading.Lock()
+
+        def warm() -> None:
+            while not stop.is_set():
+                with turn:
+                    factor = next(pending, None)
+                if factor is None:
+                    return
+                if not missing(factor):
+                    continue  # the GUI thread got to it first
+                gap = spacing * factor
+                try:
+                    comp = self._label_blobs(points, gap)
+                except Exception:  # noqa: BLE001
+                    return  # a warm cache is a luxury; the click recomputes
+                if not stop.is_set():
+                    self._cache_cluster((seed_label, float(gap)), (same, comp))
+
+        self._prefetch_label = seed_label
+        self._prefetch = tuple(
+            threading.Thread(
+                target=warm, name=f"segfix-cluster-prefetch-{i}", daemon=True
+            )
+            for i in range(CLUSTER_PREFETCH_WORKERS)
+        )
+        for worker in self._prefetch:
+            worker.start()
+
+    def join_cluster_prefetch(self, timeout: float = 30.0) -> bool:
+        """Block until the warming finishes. For tests and benchmarks -- the
+        app never calls it, because waiting is the thing being removed."""
+        deadline = time.monotonic() + timeout
+        for worker in self._prefetch:
+            worker.join(max(0.0, deadline - time.monotonic()))
+        return not any(worker.is_alive() for worker in self._prefetch)
+
+    def _stop_cluster_prefetch(self) -> None:
+        """Tell the running prefetch to give up, without waiting for it.
+
+        Not joined: the workers only check between gaps, so a join would
+        hand the GUI thread exactly the stall the prefetch exists to remove.
+        They are left to finish the gap they are on and fall out; anything
+        they write after this lands in a cache that set_cloud has already
+        replaced, or is ignored by _cluster_component's membership check.
+
+        The handles stay so :meth:`join_cluster_prefetch` can still wait for
+        them to wind down; it is clearing the label that makes the next
+        click start a fresh set rather than assume these are still on it.
+        """
+        self._prefetch_stop.set()
+        self._prefetch_label = None
 
     def _grow_cluster(self, seed: int) -> np.ndarray:
         """The cluster tool's payload (see :class:`~segfix.lasso.ClusterTool`):
@@ -204,7 +390,9 @@ class SegFixController:
         same spot again all loosen or tighten this one setting.
         """
         labels = self.cloud.labels
-        same, comp = self._cluster_component(int(labels[seed]), self.cluster_gap)
+        seed_label = int(labels[seed])
+        same, comp = self._cluster_component(seed_label, self.cluster_gap)
+        self._start_cluster_prefetch(seed_label, same)
         if same.size <= 1:
             idx = same
         else:

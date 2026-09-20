@@ -12,6 +12,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import time
 import types
 
 import numpy as np
@@ -39,6 +40,21 @@ B_IDX = set(range(_BLOB, 2 * _BLOB))
 OTHER_IDX = 2 * _BLOB
 
 
+class _FakeSignal:
+    """Enough of a vispy event for ClusterTool._connect to hook and unhook."""
+
+    def __init__(self):
+        self.callbacks = []
+
+    def connect(self, cb):
+        self.callbacks.append(cb)
+
+    def disconnect(self, cb):
+        if cb not in self.callbacks:
+            raise ValueError(cb)
+        self.callbacks.remove(cb)
+
+
 class _FakeView:
     """Stand-in for CloudView: the selection API the controller and
     ClusterTool actually touch, over the same mask helper the real view
@@ -46,7 +62,11 @@ class _FakeView:
     """
 
     def __init__(self, coords):
-        self.canvas = types.SimpleNamespace()
+        self.canvas = types.SimpleNamespace(
+            events=types.SimpleNamespace(
+                mouse_press=_FakeSignal(), mouse_release=_FakeSignal()
+            )
+        )
         self.native = None
         self.coords = coords
         self.shown = np.ones(len(coords), dtype=bool)
@@ -55,6 +75,9 @@ class _FakeView:
 
     def pick_point(self, xy):
         return 0  # every click lands on blob A's first point
+
+    def set_camera_interactive(self, on):
+        self.camera_interactive = on
 
     @property
     def selected(self):
@@ -84,6 +107,11 @@ def _controller(factor=4.0):
     cloud = PointCloud(coords=coords, labels=labels)
     view = _FakeView(coords)
     ctrl = SegFixController(view, cloud)
+    # Off unless a test asks for it: the tests below count labellings and
+    # assert what is in the cache, and a worker filling the rest of the
+    # ladder behind them would make both nondeterministic. The prefetch has
+    # its own tests, which turn it back on and join the worker.
+    ctrl.cluster_prefetch = False
     # Bypass set_armed(): it would hook real canvas events.
     ctrl.cluster._armed = True
     if factor is not None:
@@ -292,3 +320,202 @@ def test_the_component_cache_survives_a_gap_change(monkeypatch):
     ctrl.set_cluster_gap_factor(4.0)        # back to the gap of the first click
     assert len(calls) == 2                  # answered from the cache
     assert len(ctrl._cluster_cc) == 2       # one entry per (tree, gap)
+
+
+def test_an_edit_retires_the_component_cache_for_the_tree_it_changed():
+    """The other half of the workflow is edits, and the cache has to notice.
+
+    At 6x a click on tree 1 takes both blobs. Split blob B off as its own
+    tree and click tree 1 again: the cached entry describes the tree as it
+    was, and handing it back selected blob B too -- points that now belong
+    to tree 3, which the next A would have pulled straight back in.
+    """
+    from segfix import operations as ops
+
+    ctrl, view = _controller(factor=6.0)
+    _click(ctrl)
+    assert view.selected == A_IDX | B_IDX
+
+    ops.create_new(ctrl.cloud, np.array(sorted(B_IDX)))
+    view.select([])
+    ctrl.cluster.end_chain()                # a fresh click, not a repeat
+    _click(ctrl)
+    assert view.selected == A_IDX           # blob B is somebody else's now
+
+
+def test_an_undo_brings_the_cached_labelling_back():
+    """Undo restores the very label array an entry was built for, so the
+    entry is good again -- the check is against the membership, not a
+    "something changed" flag that could only ever throw the entry away."""
+    from segfix import operations as ops
+
+    ctrl, view = _controller(factor=6.0)
+    _click(ctrl)
+    ops.create_new(ctrl.cloud, np.array(sorted(B_IDX)))
+    ctrl.cloud.undo()
+    view.select([])
+    ctrl.cluster.end_chain()
+    _click(ctrl)
+    assert view.selected == A_IDX | B_IDX
+
+
+def test_an_edit_leaves_other_trees_cached(monkeypatch):
+    """Only the edited tree's entries are retired: a plot is a queue of
+    trees and an edit on one must not make the next click on another pay
+    for the whole labelling again."""
+    from segfix import analysis
+    from segfix import operations as ops
+
+    ctrl, view = _controller(factor=6.0)
+    _click(ctrl)                            # caches (tree 1, 6x)
+
+    calls = []
+    real = analysis.connected_components_within
+    monkeypatch.setattr(
+        analysis, "connected_components_within",
+        lambda coords, eps: (calls.append(float(eps)), real(coords, eps))[1],
+    )
+    # Edit a *different* tree: tree 2's lone point becomes noise.
+    ops.mark_noise(ctrl.cloud, np.array([OTHER_IDX]))
+    view.select([])
+    ctrl.cluster.end_chain()
+    _click(ctrl)                            # tree 1 again, untouched
+    assert calls == []                      # still answered from the cache
+
+
+# -- the gap-ladder prefetch --------------------------------------------------
+def _prefetching(factor=4.0):
+    """A controller with the prefetch on, and a way to wait for it."""
+    ctrl, view = _controller(factor=factor)
+    ctrl.cluster_prefetch = True
+    return ctrl, view
+
+
+def _joined(ctrl, timeout=10.0):
+    assert ctrl._prefetch, "a click should have started a prefetch"
+    assert ctrl.join_cluster_prefetch(timeout), "prefetch did not finish"
+
+
+def test_a_click_warms_the_rest_of_the_gap_ladder():
+    """One click, and every gap the next click could step to is already
+    computed -- which is the whole point: the steps stop costing anything."""
+    ctrl, _ = _prefetching()
+    _click(ctrl)
+    _joined(ctrl)
+
+    warmed = {gap for label, gap in ctrl._cluster_cc if label == 1}
+    assert len(warmed) == len(CLUSTER_GAP_FACTORS)
+
+
+def test_the_warmed_ladder_is_what_computing_it_would_have_given():
+    """The worker is handed a snapshot and must come back with exactly the
+    answer the synchronous path does, gap for gap."""
+    hot, view = _prefetching()
+    _click(hot)
+    _joined(hot)
+
+    cold, _ = _controller(factor=4.0)        # prefetch off
+    _click(cold)                             # measures the spacing
+    for factor in CLUSTER_GAP_FACTORS:
+        _, want = cold._cluster_component(1, cold._cluster_spacing * factor)
+        _, got = hot._cluster_component(1, hot._cluster_spacing * factor)
+        assert np.array_equal(got, want), f"differs at {factor}x"
+
+
+def test_the_prefetch_steps_loosen_first():
+    """Order matters: "click again to loosen" is the move, so the gaps above
+    the click are the ones that must already be there."""
+    ctrl, _ = _prefetching(factor=1.0)
+    _click(ctrl)
+    _joined(ctrl)
+    assert (1, ctrl._cluster_spacing * 1.5) in ctrl._cluster_cc
+
+
+def test_a_stepped_gap_is_answered_from_the_warmed_cache(monkeypatch):
+    """What the user feels: after the first click, stepping the gap does no
+    work on the calling thread at all."""
+    from segfix import analysis
+
+    ctrl, _ = _prefetching(factor=1.0)
+    _click(ctrl)
+    _joined(ctrl)
+
+    def refuse(coords, eps):
+        raise AssertionError(f"recomputed {eps} on the GUI thread")
+
+    monkeypatch.setattr(analysis, "connected_components_within", refuse)
+    for _ in range(len(CLUSTER_GAP_FACTORS) - 1):
+        _step_looser(ctrl)()                 # every step a cache hit
+
+
+def test_an_edit_during_the_prefetch_is_not_overruled():
+    """The worker computes against a snapshot, so an edit that lands while
+    it runs leaves it holding a labelling of a tree that no longer exists.
+    That entry must not be handed to a click."""
+    from segfix import operations as ops
+
+    ctrl, view = _prefetching(factor=6.0)
+    _click(ctrl)
+    _joined(ctrl)                            # ladder warmed for tree 1 as it was
+
+    ops.create_new(ctrl.cloud, np.array(sorted(B_IDX)))
+    view.select([])
+    ctrl.cluster.end_chain()
+    _click(ctrl)
+    assert view.selected == A_IDX            # not the warmed pre-edit blob
+
+
+def test_a_new_cloud_stands_the_prefetch_down():
+    ctrl, _ = _prefetching()
+    _click(ctrl)
+    coords = np.vstack([_A, _B, _OTHER]).astype(np.float32)
+    ctrl.set_cloud(PointCloud(coords=coords, labels=np.ones(len(coords), np.int32)))
+    assert ctrl._prefetch_label is None      # the next click starts afresh
+    assert ctrl.join_cluster_prefetch(10.0)  # and these wind down
+    assert ctrl._cluster_cc == {}            # nothing from the old points
+
+
+def test_the_cache_stops_growing():
+    """The prefetch fills nine entries a tree, so the cache needs a ceiling
+    or a plot walked tree by tree climbs without limit."""
+    from segfix.widgets import CLUSTER_CACHE_ENTRIES
+
+    ctrl, _ = _controller()
+    for label in range(200):                 # far more trees than the cap
+        for factor in CLUSTER_GAP_FACTORS:
+            ctrl._cache_cluster((label, factor), (np.empty(0, np.int64),) * 2)
+    assert len(ctrl._cluster_cc) == CLUSTER_CACHE_ENTRIES
+
+
+def test_a_superseded_prefetch_winds_down():
+    """Clicking another tree supersedes the batch on the last one. The old
+    workers check between gaps, so they linger for one labelling and then
+    go -- they must not pile up over a review."""
+    import threading
+
+    ctrl, view = _prefetching()
+    _click(ctrl)
+    ctrl._start_cluster_prefetch(2, np.array([OTHER_IDX]))   # too small to run
+    ctrl._start_cluster_prefetch(1, np.flatnonzero(ctrl.cloud.labels == 1))
+    assert ctrl.join_cluster_prefetch(10.0)
+
+    ctrl._stop_cluster_prefetch()
+    for _ in range(200):
+        if not [t for t in threading.enumerate() if "prefetch" in t.name]:
+            break
+        time.sleep(0.05)
+    assert not [t for t in threading.enumerate() if "prefetch" in t.name]
+
+
+def test_a_warm_ladder_starts_no_more_workers():
+    """Every gap step calls back into the prefetch. Once the ladder is warm
+    there is nothing for it to do, and it must not keep spawning threads to
+    discover that."""
+    ctrl, _ = _prefetching(factor=1.0)
+    _click(ctrl)
+    _joined(ctrl)
+
+    started = ctrl._prefetch
+    for _ in range(len(CLUSTER_GAP_FACTORS) - 1):
+        _step_looser(ctrl)()
+    assert ctrl._prefetch is started          # the same finished batch

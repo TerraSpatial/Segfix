@@ -55,9 +55,18 @@ def point_spacing(coords: np.ndarray, rng=None) -> float:
 #: nothing is gained by approximating.
 _VOXEL_ABOVE = 20_000
 
-#: How much finer than ``eps`` the voxels are. At 4 a voxel's diagonal is
-#: ``eps * sqrt(3) / 4``, about 0.43 eps.
-_VOXEL_DIVISOR = 4
+#: How much finer than ``eps`` the voxels are. At 3 a voxel's diagonal is
+#: ``eps * sqrt(3) / 3``, about 0.58 eps -- still comfortably inside ``eps``,
+#: which is what makes collapsing one sound (see
+#: :func:`connected_components_within`).
+_VOXEL_DIVISOR = 3
+
+#: Voxels are only used when they shrink the problem to at most this much of
+#: it. Below ``eps``-sized structure -- a gap of about one point spacing --
+#: almost every voxel holds a single point, so the grouping pass costs its
+#: ~25ms and hands the KD-tree the same work it would have had. Past that the
+#: exact answer is both faster and exact, so it is the one to take.
+_VOXEL_MIN_COLLAPSE = 0.9
 
 
 def _components_exact(coords: np.ndarray, eps: float) -> np.ndarray:
@@ -100,14 +109,44 @@ def connected_components_within(coords: np.ndarray, eps: float) -> np.ndarray:
     points the graph is built over one representative per voxel of side
     ``eps / _VOXEL_DIVISOR`` instead, and each point takes its voxel's
     answer. Collapsing a voxel is sound in the direction that matters: its
-    diagonal is 0.43 eps, so its points are within ``eps`` of one another and
+    diagonal is 0.58 eps, so its points are within ``eps`` of one another and
     genuinely are one blob. What the reduction can miss is a link between two
     points in different voxels whose representatives are further apart than
-    ``eps``; measured against the exact pass on a 120k-point tree that moved
-    no points at all at 1x, 8x and 16x the spacing, and 24 of 107,236 at 4x.
-    In exchange the cost stops following the gap: 22.2s to 1.0s at 16x, and
-    the representative count falls as fast as the pair count would have
-    climbed.
+    ``eps``. In exchange the cost stops following the gap, and the
+    representative count falls as fast as the pair count would have climbed.
+
+    The voxels are only taken when they actually shrink the problem — to
+    :data:`_VOXEL_MIN_COLLAPSE` of it or less. That gate is what sets the
+    divisor: with the voxels always on, a fine grid was needed to keep the
+    tight end honest, and the tight end is where the grid does nothing
+    anyway. Gated, the tight gaps fall through to the exact pass (which is
+    *faster* there as well as exact — 150ms against 180ms at 1x spacing on a
+    120k-point tree, because a grid that collapses 120,000 points to 118,674
+    hands the KD-tree the same work after paying 25ms to build), and the
+    grid is free to be coarser where it is the only thing keeping the gap
+    affordable. Measured on that tree against the exact pass, per gap
+    — time, and points landing in a different blob:
+
+    ====  =========  ==========  ===========
+    gap   exact      divisor 4   divisor 3
+    ====  =========  ==========  ===========
+    1x    0.150s     0.180s/255  0.179s/517
+    2x    0.204s     0.220s/40   0.210s/154
+    4x    0.449s     0.310s/10   0.237s/43
+    8x    1.375s     0.366s/0    0.226s/0
+    16x   5.334s     0.278s/0    0.120s/0
+    ====  =========  ==========  ===========
+
+    so the gate takes exact through 2x and the coarser grid roughly halves
+    the loose end (0.278s to 0.120s at 16x). Over the whole ladder that is
+    1.4x, on both that tree and a 300k-point one. The drift does not
+    disappear, it moves: the tight gaps, where the default first click
+    lives, become exact, and what the coarser grid costs lands in the middle
+    of the ladder instead — worst measured 499 points of 300,000, under two
+    hundredths of a percent. Never the other way, and not by luck: every
+    edge in the reduced graph joins two real points within ``eps``, so a
+    blob can come back split but never merged with its neighbour, and a
+    split is what the next click along already undoes.
     """
     coords = np.ascontiguousarray(coords, dtype=np.float64)
     n = len(coords)
@@ -117,7 +156,7 @@ def connected_components_within(coords: np.ndarray, eps: float) -> np.ndarray:
         grouped = _voxel_groups(coords, eps / _VOXEL_DIVISOR)
         if grouped is not None:
             inverse, first = grouped
-            if len(first) < n:  # only worth it if it actually collapsed
+            if len(first) <= _VOXEL_MIN_COLLAPSE * n:  # it earned its keep
                 return _components_exact(coords[first], eps)[inverse]
     return _components_exact(coords, eps)
 

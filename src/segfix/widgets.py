@@ -1075,21 +1075,26 @@ class SegFixWidget(QWidget):
         box.move(x, margin)
 
     def on_toggle_lasso(self, checked: bool) -> None:
+        if checked:
+            # Stand the other tool down *first*: disarming hands the mouse
+            # back to the camera, so doing it second undoes the arm below.
+            # See _uncheck_other_modes.
+            self.c.cluster.set_armed(False)
         self.c.lasso.set_armed(checked)
         self.c.lasso_filter = None
         self.c.on_lasso_section = None
         if checked:
-            self.c.cluster.set_armed(False)
             self._uncheck_other_modes(self.lasso_btn)
         else:
             self.move_btn.setChecked(True)
 
     def on_toggle_tree_lasso(self, checked: bool) -> None:
+        if checked:
+            self.c.cluster.set_armed(False)  # before arming — see on_toggle_lasso
         self.c.lasso.set_armed(checked)
         self.c.lasso_filter = self._filter_to_current_tree if checked else None
         self.c.on_lasso_section = None
         if checked:
-            self.c.cluster.set_armed(False)
             self._uncheck_other_modes(self.tree_lasso_btn)
             if self.current is None:
                 self.c.view.status = (
@@ -1101,11 +1106,12 @@ class SegFixWidget(QWidget):
 
     def on_toggle_cluster(self, checked: bool) -> None:
         """Arm/disarm the click-to-select-a-connected-patch tool."""
-        self.c.cluster.set_armed(checked)
         if checked:
-            self.c.lasso.set_armed(False)
+            self.c.lasso.set_armed(False)  # before arming — see on_toggle_lasso
             self.c.lasso_filter = None
             self.c.on_lasso_section = None
+        self.c.cluster.set_armed(checked)
+        if checked:
             self._uncheck_other_modes(self.cluster_btn)
         else:
             self.reset_cluster_gap()
@@ -1115,11 +1121,12 @@ class SegFixWidget(QWidget):
         """Arm/disarm the shared lasso tool in "section" mode: a completed
         drag becomes the kept-region outline (via _on_lasso_section_drawn)
         instead of a selection. See SegFixController._on_lasso."""
+        if checked:
+            self.c.cluster.set_armed(False)  # before arming — see on_toggle_lasso
         self.c.lasso.set_armed(checked)
         self.c.lasso_filter = None
         self.c.on_lasso_section = self._on_lasso_section_drawn if checked else None
         if checked:
-            self.c.cluster.set_armed(False)
             self._uncheck_other_modes(self.section_draw_btn)
             self.c.view.status = "Lasso section: drag to outline the kept region"
         else:

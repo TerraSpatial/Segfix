@@ -63,7 +63,9 @@ ShiftPrompt = Callable[[np.ndarray, np.ndarray, np.ndarray], "tuple[float, float
 #: means "review at full resolution". Wired to a Qt dialog by the app; as
 #: with :data:`ShiftPrompt`, omitting it (the default) skips the check
 #: entirely, so every existing caller and test loads every point.
-DensityPrompt = Callable[[float, int, float], "float | None"]
+DensityPrompt = Callable[
+    [float, int, float, "Callable[[float], float | None]"], "float | None"
+]
 
 #: ``(message, fraction) -> None``, fraction 0..1 — where a long open or save
 #: has got to. Wired to a progress window by the app; omitting it (the
@@ -300,12 +302,24 @@ class _BaseCatalog:
         # and None means they declined; absent means they were never asked.
         decided = workspace.settings(self.path)
 
+        # Sample boxes of the cloud at most once, and only if something
+        # asks: the spacing measurement wants them, so does the prompt's
+        # "keeps about N% of the points", and a reopen with a remembered
+        # spacing may want neither. Finding them is a pass over every point
+        # per attempt — twenty seconds on a 480M-point cloud.
+        blocks: list = []
+
+        def sampled():
+            if not blocks:
+                blocks.extend(density.sample_blocks(self.coords))
+            return blocks
+
         if "spacing" in decided:
             self.spacing = decided["spacing"]
         else:
             if report is not None:
                 report("Measuring point density")
-            self.spacing = density.estimate_spacing(self.coords)
+            self.spacing = density.spacing_from_blocks(sampled())
             workspace.remember(self.path, spacing=self.spacing)
         if not (0.0 < (self.spacing or 0.0) < density.DENSE_SPACING):
             return
@@ -314,7 +328,8 @@ class _BaseCatalog:
             chosen = decided["voxel_size"]
         else:
             chosen = density_prompt(
-                self.spacing, int(self.count), density.suggest_voxel(self.spacing)
+                self.spacing, int(self.count), density.suggest_voxel(self.spacing),
+                lambda voxel: density.estimate_kept_fraction(sampled(), voxel),
             )
             workspace.remember(
                 self.path,

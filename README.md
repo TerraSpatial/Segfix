@@ -167,7 +167,12 @@ rounded to half a metre would be meaningless, so it won't offer to downsample.
 On load segfix measures the cloud's typical point spacing. If points are closer
 than **2 cm** it offers to downsample for the session, one point per voxel (3 cm
 by default, editable in the prompt), which is plenty to see and re-label a tree
-but a fraction of the points to draw and lasso. Choose **Keep Full Resolution**
+but a fraction of the points to draw and lasso. The prompt shows what the size
+you pick would actually keep — "keeps about 42% of the points (204,207,954)" —
+measured from sample boxes of the cloud and updated as you change the size.
+Worth reading before accepting: how much a voxel thins a cloud depends on how
+its points are spread, not on the average spacing, and a cloud measuring 1.7 cm
+can still keep 85% of its points at 3 cm. Choose **Keep Full Resolution**
 and nothing changes.
 
 Downsampling is a working-set choice, not a destructive one. Nothing is written

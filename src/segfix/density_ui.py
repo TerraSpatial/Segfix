@@ -30,7 +30,7 @@ class DownsampleDialog(QDialog):
     """Reports the measured spacing and offers an editable voxel size."""
 
     def __init__(self, spacing: float, n_points: int, suggested: float,
-                 parent=None):
+                 kept_fraction=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Dense point cloud")
         layout = QVBoxLayout(self)
@@ -66,8 +66,21 @@ class DownsampleDialog(QDialog):
         self.spin.setValue(float(suggested))
         self.spin.setMinimumWidth(110)
         row.addWidget(self.spin)
-        row.addStretch(1)
+        # What that size would actually cost, measured rather than guessed:
+        # how much a voxel thins a cloud depends on how its points are
+        # spread, not on the median spacing, and the difference decides
+        # whether downsampling is worth doing at all.
+        self.estimate = QLabel("")
+        self.estimate.setStyleSheet("color: gray;")
+        row.addWidget(self.estimate, 1)
+        row.addStretch(0)
         layout.addLayout(row)
+
+        self._kept_fraction = kept_fraction
+        self._n_points = n_points
+        if kept_fraction is not None:
+            self.spin.valueChanged.connect(self._update_estimate)
+            self._update_estimate(self.spin.value())
 
         self.button_box = QDialogButtonBox()
         self.downsample_btn = self.button_box.addButton(
@@ -83,6 +96,20 @@ class DownsampleDialog(QDialog):
 
         self.setMinimumWidth(460)
 
+    def _update_estimate(self, voxel: float) -> None:
+        """Label the spin box with what this voxel size keeps."""
+        try:
+            fraction = self._kept_fraction(float(voxel))
+        except Exception:  # a measurement must never block the prompt
+            fraction = None
+        if fraction is None:
+            self.estimate.setText("")
+            return
+        self.estimate.setText(
+            f"keeps about {fraction * 100:.0f}% of the points "
+            f"({round(self._n_points * fraction):,})"
+        )
+
     def voxel(self) -> float | None:
         """The chosen voxel size, or ``None`` if the user kept every point.
         Call after ``exec()``."""
@@ -92,7 +119,8 @@ class DownsampleDialog(QDialog):
 
 
 def prompt_downsample(
-    parent, spacing: float, n_points: int, suggested: float
+    parent, spacing: float, n_points: int, suggested: float,
+    kept_fraction=None,
 ) -> float | None:
     """Show :class:`DownsampleDialog` and return the chosen voxel size, or
     ``None`` to review the cloud at full resolution.
@@ -100,6 +128,6 @@ def prompt_downsample(
     Matches :data:`segfix.treecatalog.DensityPrompt` — pass this (bound to a
     parent window) straight through as ``open_catalog``'s ``density_prompt``.
     """
-    dlg = DownsampleDialog(spacing, n_points, suggested, parent)
+    dlg = DownsampleDialog(spacing, n_points, suggested, kept_fraction, parent)
     dlg.exec()
     return dlg.voxel()

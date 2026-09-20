@@ -160,7 +160,7 @@ def test_a_downsampled_session_exports_whole_trees(tmp_path):
     coords, labels = _grid(400, [1, 2], step=0.005)  # 5 mm: dense enough to offer
     path = _ply(tmp_path, coords, labels)
     cat = open_catalog(
-        path, density_prompt=lambda spacing, n_points, suggested: suggested
+        path, density_prompt=lambda spacing, n_points, suggested, kept: suggested
     )
     assert cat.is_decimated and cat.working_count < cat.count
 

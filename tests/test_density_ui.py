@@ -43,3 +43,50 @@ def test_keep_full_resolution_declines_downsampling():
     dlg = _dialog()
     dlg.keep_btn.click()
     assert dlg.voxel() is None
+
+
+# -- what the chosen size would keep ------------------------------------------
+def test_the_estimate_shows_and_follows_the_voxel_size():
+    """A number, not a guess: the point of showing it is that it changes as
+    you try sizes, so you can see which one is worth taking."""
+    asked = []
+
+    def kept_fraction(voxel):
+        asked.append(voxel)
+        return {0.03: 0.85, 0.05: 0.42}.get(round(voxel, 3), 0.5)
+
+    dlg = DownsampleDialog(0.017, 480_000_000, 0.03, kept_fraction)
+    dlg.show()
+    QApplication.processEvents()
+    assert asked == [pytest.approx(0.03)]
+    assert dlg.estimate.text() == "keeps about 85% of the points (408,000,000)"
+
+    dlg.spin.setValue(0.05)
+    assert dlg.estimate.text() == "keeps about 42% of the points (201,600,000)"
+
+
+def test_no_estimate_is_shown_when_it_cannot_be_measured():
+    dlg = DownsampleDialog(0.006, 1_000, DEFAULT_VOXEL, lambda voxel: None)
+    dlg.show()
+    QApplication.processEvents()
+    assert dlg.estimate.text() == ""
+
+
+def test_a_failing_measurement_never_blocks_the_prompt():
+    """The dialog's job is the question, not the measurement."""
+    def explode(voxel):
+        raise MemoryError("not now")
+
+    dlg = DownsampleDialog(0.006, 1_000, DEFAULT_VOXEL, explode)
+    dlg.show()
+    QApplication.processEvents()
+    assert dlg.estimate.text() == ""
+    dlg.downsample_btn.click()
+    assert dlg.voxel() == pytest.approx(DEFAULT_VOXEL)
+
+
+def test_the_dialog_works_without_any_estimate_at_all():
+    dlg = _dialog()  # no kept_fraction: the old three-argument shape
+    assert dlg.estimate.text() == ""
+    dlg.keep_btn.click()
+    assert dlg.voxel() is None

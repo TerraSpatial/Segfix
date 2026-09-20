@@ -524,8 +524,9 @@ def _run_scene(args) -> int:
             label_field=args.label_field,
             shift_prompt=lambda mins, maxs, suggested:
                 ask(prompt_global_shift, win, mins, maxs, suggested),
-            density_prompt=lambda spacing, n_points, suggested:
-                ask(prompt_downsample, win, spacing, n_points, suggested),
+            density_prompt=lambda spacing, n_points, suggested, kept_fraction:
+                ask(prompt_downsample, win, spacing, n_points, suggested,
+                    kept_fraction),
             progress=report,
         )
 

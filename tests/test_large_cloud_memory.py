@@ -129,7 +129,7 @@ def test_opening_a_dense_cloud_stays_within_its_memory_budget(tmp_path):
     thread = threading.Thread(target=watch, daemon=True)
     thread.start()
     try:
-        cat = open_catalog(path, density_prompt=lambda s, n_pts, sug: sug)
+        cat = open_catalog(path, density_prompt=lambda s, n_pts, sug, kept: sug)
     finally:
         stop[0] = True
         thread.join()

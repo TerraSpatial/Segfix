@@ -154,8 +154,9 @@ def test_catalog_decimates_when_the_prompt_accepts(tmp_path):
     path, n_a, n_b = _dense_plot(tmp_path)
     seen = {}
 
-    def prompt(spacing, n_points, suggested):
-        seen.update(spacing=spacing, n_points=n_points, suggested=suggested)
+    def prompt(spacing, n_points, suggested, kept_fraction):
+        seen.update(spacing=spacing, n_points=n_points, suggested=suggested,
+                    kept=kept_fraction(suggested))
         return suggested
 
     cat = open_catalog(path, density_prompt=prompt)
@@ -422,7 +423,7 @@ def test_dense_utm_cloud_asks_both_questions_and_decimates(tmp_path):
     cat = open_catalog(
         path,
         shift_prompt=lambda mins, maxs, sug: (asked.append("shift"), tuple(sug))[1],
-        density_prompt=lambda sp, n_, sug: (asked.append("density"), sug)[1],
+        density_prompt=lambda sp, n_, sug, kept: (asked.append("density"), sug)[1],
     )
 
     assert asked == ["shift", "density"]
@@ -443,7 +444,7 @@ def test_declining_the_shift_also_declines_the_density_check(tmp_path):
     cat = open_catalog(
         path,
         shift_prompt=lambda mins, maxs, sug: (asked.append("shift"), None)[1],
-        density_prompt=lambda sp, n_, sug: (asked.append("density"), sug)[1],
+        density_prompt=lambda sp, n_, sug, kept: (asked.append("density"), sug)[1],
     )
 
     assert asked == ["shift"]          # never got as far as the density check
@@ -622,7 +623,7 @@ def test_reopening_does_not_ask_the_downsample_question_again(tmp_path):
     data = _project(tmp_path)
     asked = []
 
-    def prompt(spacing, n_points, suggested):
+    def prompt(spacing, n_points, suggested, kept_fraction):
         asked.append(suggested)
         return suggested
 
@@ -642,7 +643,7 @@ def test_declining_is_remembered_so_it_is_not_re_offered(tmp_path):
     data = _project(tmp_path)
     asked = []
 
-    def decline(spacing, n_points, suggested):
+    def decline(spacing, n_points, suggested, kept_fraction):
         asked.append(suggested)
         return None
 
@@ -699,7 +700,7 @@ def test_a_cloud_opened_outside_a_project_still_asks(tmp_path):
     asked = []
     for _ in range(2):
         open_catalog(
-            path, density_prompt=lambda s, n, sug: (asked.append(sug), sug)[1]
+            path, density_prompt=lambda s, n, sug, kept: (asked.append(sug), sug)[1]
         )
     assert len(asked) == 2
 
@@ -711,3 +712,114 @@ def test_the_offered_voxel_is_coarser_than_the_cloud(tmp_path):
     assert density.suggest_voxel(0.005) == density.DEFAULT_VOXEL
     assert density.suggest_voxel(0.017) == density.DEFAULT_VOXEL
     assert density.suggest_voxel(0.05) == 0.05
+
+
+# -- what a voxel size would actually keep ------------------------------------
+def _spread_cloud(n, side, rng=None):
+    rng = rng or np.random.default_rng(3)
+    return (rng.random((n, 3)) * side).astype(np.float32)
+
+
+def test_kept_fraction_matches_decimating_the_whole_cloud():
+    """The estimate reads a few sample boxes; it has to agree with what the
+    decimation then does to every point."""
+    coords = _spread_cloud(400_000, 1.5)
+    blocks = density.sample_blocks(coords)
+    for voxel in (0.02, 0.05, 0.1):
+        actual = len(density.voxel_indices(coords, voxel)) / len(coords)
+        estimate = density.estimate_kept_fraction(blocks, voxel)
+        assert abs(estimate - actual) < 0.05, (
+            f"{voxel}: estimate {estimate:.3f} vs actual {actual:.3f}"
+        )
+
+
+def test_kept_fraction_spans_keeping_everything_to_keeping_almost_nothing():
+    coords = _spread_cloud(200_000, 1.0)
+    blocks = density.sample_blocks(coords)
+    # A voxel far finer than the points keeps them all; a coarse one collapses
+    # whole neighbourhoods into single representatives.
+    assert density.estimate_kept_fraction(blocks, 0.0005) == pytest.approx(1.0)
+    assert density.estimate_kept_fraction(blocks, 0.2) < 0.05
+
+
+def test_kept_fraction_says_nothing_rather_than_guessing():
+    """Nothing to measure: no answer, and the prompt shows no estimate."""
+    assert density.estimate_kept_fraction([], 0.02) is None
+    assert density.estimate_kept_fraction([np.zeros((10, 3))], 0.02) is None
+
+
+def test_kept_fraction_copes_with_a_cloud_thinner_than_the_voxel():
+    """A slab (a canopy layer, a scanned wall) has no interior along its
+    thin axis; the estimate keeps working instead of giving up."""
+    rng = np.random.default_rng(5)
+    slab = np.column_stack([rng.random(40_000) * 2.0, rng.random(40_000) * 2.0,
+                            rng.random(40_000) * 0.02]).astype(np.float32)
+    blocks = density.sample_blocks(slab)
+    estimate = density.estimate_kept_fraction(blocks, 0.05)
+    actual = len(density.voxel_indices(slab, 0.05)) / len(slab)
+    assert estimate is not None
+    assert abs(estimate - actual) < 0.05
+
+
+def test_the_prompt_is_handed_a_working_estimate(tmp_path):
+    path, _n_a, _n_b = _dense_plot(tmp_path)
+    seen = {}
+
+    def prompt(spacing, n_points, suggested, kept_fraction):
+        seen["at_suggested"] = kept_fraction(suggested)
+        seen["at_coarse"] = kept_fraction(0.2)
+        return None
+
+    open_catalog(path, density_prompt=prompt)
+    assert 0.0 < seen["at_suggested"] <= 1.0
+    assert seen["at_coarse"] < seen["at_suggested"]
+
+
+def test_the_cloud_is_only_sampled_once_per_open(tmp_path, monkeypatch):
+    """Finding sample boxes is a pass over every point per attempt — twenty
+    seconds on a 480M-point cloud — so the spacing measurement and the
+    prompt's estimate share one sampling."""
+    calls = []
+    real = density.sample_blocks
+    monkeypatch.setattr(
+        density, "sample_blocks",
+        lambda coords, rng=None: calls.append(1) or real(coords, rng),
+    )
+    path, _n_a, _n_b = _dense_plot(tmp_path)
+
+    def prompt(spacing, n_points, suggested, kept_fraction):
+        kept_fraction(suggested)
+        kept_fraction(0.05)  # a second look costs nothing
+        return None
+
+    open_catalog(path, density_prompt=prompt)
+    assert len(calls) == 1
+
+
+def test_a_remembered_spacing_still_gets_an_estimate(tmp_path):
+    """Reopening a project remembers the measured spacing, so nothing has
+    sampled the cloud yet when the prompt asks."""
+    from segfix import workspace
+
+    data = str(_project(tmp_path))
+    workspace.remember(data, spacing=0.005)
+    seen = {}
+
+    def prompt(spacing, n_points, suggested, kept_fraction):
+        seen["kept"] = kept_fraction(suggested)
+        return None
+
+    open_catalog(data, density_prompt=prompt)
+    assert seen["kept"] is not None and 0.0 < seen["kept"] <= 1.0
+
+
+def test_nothing_is_sampled_when_the_answer_is_remembered(tmp_path, monkeypatch):
+    from segfix import workspace
+
+    data = str(_project(tmp_path))
+    workspace.remember(data, spacing=0.005, voxel_size=None)
+    monkeypatch.setattr(
+        density, "sample_blocks",
+        lambda *a, **k: pytest.fail("a remembered answer needs no sampling"),
+    )
+    assert not open_catalog(data, density_prompt=lambda *a: a[2]).is_decimated

@@ -111,16 +111,47 @@ def estimate_spacing(coords: np.ndarray, rng=None) -> float:
     if n <= _BLOCK_TARGET:
         return _median_nn(coords, rng)
 
+    return spacing_from_blocks(sample_blocks(coords, rng), rng)
+
+
+def spacing_from_blocks(blocks, rng=None) -> float:
+    """:func:`estimate_spacing` for blocks already sampled — so an open that
+    also wants :func:`estimate_kept_fraction` pays for the sampling once.
+    Scanning for the blocks is a pass over every point per attempt, which on
+    a 480M-point cloud is twenty seconds, not a rounding error."""
+    rng = rng or np.random.default_rng(0)
+    measured = [_median_nn(block, rng) for block in blocks if len(block) >= 50]
+    if not measured:
+        return 0.0
+    return float(np.median(measured))
+
+
+def sample_blocks(coords: np.ndarray, rng=None) -> list[np.ndarray]:
+    """A few small, *complete* boxes of the cloud, each holding roughly
+    :data:`_BLOCK_TARGET` points.
+
+    Complete is the point: everything inside a box is there, so a
+    neighbourhood measured in one is the real neighbourhood, and a voxel
+    grid laid over one thins exactly as it would over the whole cloud.
+    That is what lets both the spacing measurement and
+    :func:`estimate_kept_fraction` answer a question about a 480M-point
+    cloud by looking at 40k points.
+    """
+    coords = np.asarray(coords)
+    n = len(coords)
+    rng = rng or np.random.default_rng(0)
+    if n < 2:
+        return []
     lo_all, hi_all = coords.min(axis=0), coords.max(axis=0)
     extent = float(np.max(hi_all - lo_all))
     if extent <= 0:
-        return 0.0
+        return []
     # First guess at a box side holding ~_BLOCK_TARGET points, assuming the
     # points were spread evenly through the bounding box. They never are, so
     # the loop below corrects it.
     half = 0.5 * extent * max((_BLOCK_TARGET / n) ** (1 / 3), 1e-4)
 
-    measured: list[float] = []
+    blocks: list[np.ndarray] = []
     for _ in range(_BLOCK_SEEDS):
         centre = coords[int(rng.integers(n))].astype(np.float64)
         block = np.empty((0, 3))
@@ -137,11 +168,45 @@ def estimate_spacing(coords: np.ndarray, rng=None) -> float:
             break
         else:
             block = coords[mask]
-        if len(block) >= 50:
-            measured.append(_median_nn(block, rng))
-    if not measured:
-        return 0.0
-    return float(np.median(measured))
+        blocks.append(block)
+    return blocks
+
+
+def estimate_kept_fraction(blocks, voxel: float) -> float | None:
+    """What fraction of the cloud a ``voxel`` decimation would keep, judged
+    from :func:`sample_blocks`, or ``None`` if the blocks can't say.
+
+    Worth measuring rather than predicting: the answer depends on how the
+    points are actually distributed, not on the median spacing. A cloud
+    measuring 1.7cm keeps 92% of its points at a 2cm voxel and 85% at 3cm —
+    most voxels already hold a single point — where an even spread would
+    suggest a two- or threefold thinning.
+
+    Only the block's interior counts, on each axis that has an interior. A
+    voxel straddling a face of the box sees just the sliver inside it, so it
+    keeps a representative for a handful of points where the real voxel
+    holds many, which would overstate what the decimation keeps. An axis the
+    cloud is barely thicker than a voxel along — a slab, a single-storey
+    canopy — has no interior to retreat to, and is left alone: there every
+    voxel is cut the same way, so the fraction is honest as it stands.
+    """
+    fractions = []
+    for block in blocks:
+        if len(block) < 50:
+            continue
+        lo, hi = block.min(axis=0), block.max(axis=0)
+        roomy = (hi - lo) >= 3 * voxel
+        lo = np.where(roomy, lo + voxel, lo)
+        hi = np.where(roomy, hi - voxel, hi)
+        inner = in_box(block, lo, hi)
+        total = int(inner.sum())
+        if total < 20:
+            continue
+        kept = int(inner[voxel_indices(block, voxel)].sum())
+        fractions.append(kept / total)
+    if not fractions:
+        return None
+    return float(np.median(fractions))
 
 
 def suggest_voxel(spacing: float) -> float:

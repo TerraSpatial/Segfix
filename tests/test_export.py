@@ -7,6 +7,7 @@ session was doing (downsampled, globally shifted) and whatever is unsaved.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -54,8 +55,15 @@ def _grid(n_per_tree, labels, step=1.0):
 
 # -- naming and grouping ------------------------------------------------------
 def test_each_tree_is_named_after_the_cloud_and_keeps_its_extension():
-    assert export.tree_path("/out", "/proj/plot_a.las", 7) == "/out/plot_a_tree_7.las"
-    assert export.tree_path("/out", "/proj/plot_a.ply", 12) == "/out/plot_a_tree_12.ply"
+    # Joined with the platform's own separator, so the expectation is too --
+    # spelling it "/out/..." passed on Linux and failed on Windows, where
+    # the maintainer actually runs the suite.
+    assert export.tree_path("/out", "/proj/plot_a.las", 7) == os.path.join(
+        "/out", "plot_a_tree_7.las"
+    )
+    assert export.tree_path("/out", "/proj/plot_a.ply", 12) == os.path.join(
+        "/out", "plot_a_tree_12.ply"
+    )
 
 
 def test_unassigned_and_noise_are_not_trees():
@@ -74,7 +82,7 @@ def test_ply_export_writes_one_file_per_tree_with_every_field(tmp_path):
 
     written = export.export_trees(cat, str(tmp_path / "trees"))
 
-    assert [p.rsplit("/", 1)[1] for p in written] == [
+    assert [os.path.basename(p) for p in written] == [
         "plot_tree_1.ply", "plot_tree_2.ply", "plot_tree_5.ply",
     ]
     whole = io.load(path)

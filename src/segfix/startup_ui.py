@@ -51,6 +51,10 @@ class StartupDialog(QDialog):
         self.list = QListWidget()
         self.list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.list.itemDoubleClicked.connect(self._on_choose)
+        # Return on the list opens it too, wherever the platform sends the
+        # key — the list has focus at startup, so Enter is the whole
+        # interaction for "reopen what I was working on".
+        self.list.itemActivated.connect(self._on_choose)
         layout.addWidget(self.list, stretch=1)
         self._populate()
 
@@ -85,17 +89,33 @@ class StartupDialog(QDialog):
         self._update_timer.start(300)
 
         row = QHBoxLayout()
-        new_btn = QPushButton("New Project…")
-        new_btn.clicked.connect(self._new_project)
-        row.addWidget(new_btn)
+        self.new_btn = QPushButton("New Project…")
+        self.new_btn.clicked.connect(self._new_project)
+        row.addWidget(self.new_btn)
         row.addStretch()
-        open_btn = QPushButton("Open")
-        open_btn.clicked.connect(self._on_choose)
-        row.addWidget(open_btn)
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        row.addWidget(cancel_btn)
+        self.open_btn = QPushButton("Open")
+        self.open_btn.clicked.connect(self._on_choose)
+        row.addWidget(self.open_btn)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        row.addWidget(self.cancel_btn)
         layout.addLayout(row)
+
+        # Enter opens the preselected project — the common case by far, and
+        # the top row is already the most recent one. Only the button Enter
+        # should press claims autoDefault, or whichever of them last had
+        # focus would answer the key instead.
+        for button in (self.new_btn, self.cancel_btn, self.update_btn):
+            button.setAutoDefault(False)
+        has_recent = self.list.count() > 0
+        opener = self.open_btn if has_recent else self.new_btn
+        self.open_btn.setEnabled(has_recent)
+        opener.setAutoDefault(True)
+        opener.setDefault(True)
+        # Focus goes to the list, so the arrow keys pick a different project
+        # before Enter opens it; with nothing to reopen, to the one button
+        # that can do anything.
+        (self.list if has_recent else self.new_btn).setFocus()
 
     def _populate(self) -> None:
         # registry.load_registry() is already most-recently-opened first, so

@@ -148,6 +148,17 @@ def suggest_voxel(spacing: float) -> float:
     return DENSE_SPACING
 
 
+def _run_starts(ordered: np.ndarray) -> np.ndarray:
+    """Where each run of equal values starts in a sorted array — the rows of
+    one voxel are the block between two rows that differ.
+    (``np.unique(..., return_index=True)`` would answer this by sorting all
+    N keys yet again.)"""
+    first = np.empty(len(ordered), dtype=bool)
+    first[0] = True
+    np.not_equal(ordered[1:], ordered[:-1], out=first[1:])
+    return np.flatnonzero(first)
+
+
 def voxel_indices(coords: np.ndarray, voxel: float) -> np.ndarray:
     """Indices of one representative point per occupied ``voxel``-sized cube.
 
@@ -173,42 +184,50 @@ def voxel_indices(coords: np.ndarray, voxel: float) -> np.ndarray:
         return np.empty(0, dtype=np.int64)
 
     origin = coords.min(axis=0)
+    span = coords.max(axis=0) - origin
+    dims = np.floor(span / voxel).astype(np.int64) + 1
     # Voxel key and centre-offset, one axis at a time into buffers allocated
-    # once. Written as whole-array expressions this step builds around a
-    # dozen ``(N, 3)`` float64 temporaries — about 200 bytes of churn per
-    # point, or 4GB on a 20M-point plot — and those large allocate/free round
-    # trips cost roughly fifty times more on Windows (fresh pages committed
-    # through VirtualAlloc, kernel-zeroed) than on Linux, where glibc reuses a
-    # warm arena. This is the "Downsampling" step of an import, so it runs on
-    # the biggest array the app ever touches.
-    keys = np.empty((3, n), dtype=np.int64)  # axis-major: each row contiguous
+    # once, and only ever four of them: this runs on the biggest array the
+    # app ever touches (a 480M-point plot), where each (N,) float64 buffer is
+    # 3.8GB, so a temporary that whole-array expressions would leave behind
+    # is measured in gigabytes rather than being free. Large allocate/free
+    # round trips also cost roughly fifty times more on Windows (fresh pages
+    # committed through VirtualAlloc, kernel-zeroed) than on Linux, where
+    # glibc hands the same warm arena back.
+    #
+    # The three axis keys are folded into one flat key as they are computed,
+    # rather than kept as a (3, N) array and combined afterwards — same
+    # arithmetic, a third of the memory.
+    flat = np.zeros(n, dtype=np.int64)
     # Squared distance to the voxel centre, in voxel units — the tie-break
     # that decides which point of each voxel is kept.
-    offset = np.zeros(n, dtype=np.float64)
+    offset = np.zeros(n, dtype=np.float32)
     buf = np.empty(n, dtype=np.float64)
     cell = np.empty(n, dtype=np.float64)
+    cell_i = np.empty(n, dtype=np.int64)
+    flattenable = float(dims[0]) * float(dims[1]) * float(dims[2]) < 2.0**62
+    keys = np.empty((3, n), dtype=np.int64) if not flattenable else None
     for axis in range(3):
         np.subtract(coords[:, axis], origin[axis], out=buf, dtype=np.float64)
         buf /= voxel
         np.floor(buf, out=cell)
-        keys[axis] = cell
+        np.copyto(cell_i, cell, casting="unsafe")  # into the buffer, no temporary
+        if keys is not None:  # pragma: no cover - needs a >10^6 m extent
+            keys[axis] = cell_i
+        else:
+            if axis:
+                flat *= dims[axis]
+            flat += cell_i
         buf -= cell  # fractional position within the voxel, in [0, 1)
         buf -= 0.5
         buf *= buf
-        offset += buf
-    offset = offset.astype(np.float32)
-
-    dims = keys.max(axis=1) + 1
-    # Flattening three axes into one int64 is much faster than a structured
-    # unique, but only while the product fits; fall back when it doesn't
-    # (an enormous extent against a tiny voxel).
-    if float(dims[0]) * float(dims[1]) * float(dims[2]) < 2.0**62:
-        flat = keys[0] * dims[1]
-        flat += keys[1]
-        flat *= dims[2]
-        flat += keys[2]
-    else:  # pragma: no cover - needs a >10^6 m extent at millimetre voxels
-        flat = np.unique(keys.T, axis=0, return_inverse=True)[1]
+        offset += buf  # accumulated in float32: the tie-break needs no more
+    del buf, cell, cell_i
+    if keys is not None:  # pragma: no cover - needs a >10^6 m extent
+        # Flattening three axes into one int64 is much faster than a
+        # structured unique, but only while the product fits.
+        flat = np.unique(keys.T, axis=0, return_inverse=True)[1].astype(np.int64)
+        del keys
 
     # Group the points by voxel, then take the centre-most of each group.
     #
@@ -217,29 +236,27 @@ def voxel_indices(coords: np.ndarray, voxel: float) -> np.ndarray:
     # function. So: one stable sort by voxel, and the tie-break folded into
     # an integer min-reduction over each run.
     order = np.argsort(flat, kind="stable")
+    if n >= 2**32:  # pragma: no cover - 4 billion points is ~50GB of coords
+        # No room to pack an index alongside the offset; fall back.
+        best = np.lexsort((offset, flat))[_run_starts(flat[order])]
+        return np.sort(best.astype(np.int64))
     ordered = flat[order]
-    # Run starts — ``ordered`` is sorted, so a voxel's rows are the block
-    # between two rows that differ. (np.unique(..., return_index=True) would
-    # answer this by sorting all N keys yet again.)
-    first = np.empty(n, dtype=bool)
-    first[0] = True
-    np.not_equal(ordered[1:], ordered[:-1], out=first[1:])
-    starts = np.flatnonzero(first)
+    del flat  # the sorted copy is all the rest of this needs
+    starts = _run_starts(ordered)
+    del ordered
 
     # IEEE-754 bit patterns of non-negative floats compare as integers in the
     # same order as the floats, and ``offset`` is a sum of squares, so packing
     # it above the point's own index makes one int64 that orders by distance
     # to the voxel centre and then, for a tie, by position — which is exactly
     # the row lexsort's stable second key would have left first in the run.
-    if n >= 2**32:  # pragma: no cover - 4 billion points is ~50GB of coords
-        # No room to pack an index alongside the offset; fall back.
-        best = np.lexsort((offset, flat))[starts]
-    else:
-        packed = offset[order].view(np.uint32).astype(np.int64)
-        packed <<= 32
-        packed |= order
-        best = np.minimum.reduceat(packed, starts)
-        best &= 0xFFFFFFFF  # unpack the index the winning offset carried
+    packed = offset[order].view(np.uint32).astype(np.int64)
+    del offset
+    packed <<= 32
+    packed |= order
+    best = np.minimum.reduceat(packed, starts)
+    del packed
+    best &= 0xFFFFFFFF  # unpack the index the winning offset carried
     return np.sort(best.astype(np.int64))
 
 

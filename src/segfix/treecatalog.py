@@ -46,6 +46,13 @@ from .model import NOISE, UNASSIGNED, PointCloud
 # the same "global shift" idea for the same reason.
 GLOBAL_SHIFT_THRESHOLD = 1.0e4
 
+#: Points handled per chunk by the passes that walk the whole cloud —
+#: reading coordinates and labels, ranking labels for the sort. Big enough
+#: that the per-chunk overhead is nothing against the work itself, small
+#: enough that a chunk's wide (float64 / int64) working copies stay a few
+#: hundred MB however many points the cloud has.
+_CHUNK = 4_000_000
+
 #: ``(mins, maxs, suggested_shift) -> (dx, dy, dz) | None`` — ``None`` means
 #: "load unshifted". Wired to a Qt dialog by the app; ``None`` (the default)
 #: skips the prompt entirely and never shifts, which is what every existing
@@ -166,12 +173,24 @@ def _label_order(labels: np.ndarray) -> np.ndarray:
     span = int(labels.max()) - lo + 1
     if span > max(labels.size, 1_000_000):
         return np.argsort(labels, kind="stable")
-    shifted = (labels.astype(np.int64) - lo)
-    present = np.bincount(shifted, minlength=span) > 0
+    # Chunked, so the int64 widening of the labels is a chunk's worth at a
+    # time rather than 8 bytes a point over the whole cloud.
+    counts = np.zeros(span, dtype=np.int64)
+    for start in range(0, labels.size, _CHUNK):
+        block = labels[start:start + _CHUNK].astype(np.int64)
+        block -= lo
+        counts += np.bincount(block, minlength=span)
+    present = counts > 0
+    del counts
     if int(present.sum()) > np.iinfo(np.uint16).max + 1:
         return np.argsort(labels, kind="stable")
     rank_of = (np.cumsum(present) - 1).astype(np.uint16)
-    return np.argsort(rank_of[shifted], kind="stable")
+    key = np.empty(labels.size, dtype=np.uint16)
+    for start in range(0, labels.size, _CHUNK):
+        block = labels[start:start + _CHUNK].astype(np.int64)
+        block -= lo
+        key[start:start + _CHUNK] = rank_of[block]
+    return np.argsort(key, kind="stable")
 
 
 class _BaseCatalog:
@@ -204,18 +223,27 @@ class _BaseCatalog:
         # and _mm (the memmap of fixed-size point records).
         self._open()
 
-        # Decode once at full (float64) precision — shifting after the fact
+        # Decoded at full (float64) precision — shifting after the fact
         # would already have lost whatever a premature float32 cast rounded
-        # away — then resolve/apply the global shift and store as float32.
+        # away — but a chunk at a time, straight into the float32 array the
+        # session keeps. Decoding the whole cloud at once instead costs
+        # 24 bytes a point for the float64 copy and as much again for the
+        # temporaries around it, which on a 480M-point plot is tens of
+        # gigabytes of peak, for an array that ends up 12 bytes a point.
         report("Reading coordinates")
-        raw_coords = self._decode_coords_raw(self._mm)
-        self.global_shift = self._resolve_global_shift(raw_coords, shift_prompt)
-        self.coords = self._shift_and_cast(raw_coords)
-        del raw_coords
+        self.coords, bounds = self._read_coords(None)
+        self.global_shift = self._resolve_global_shift(bounds, shift_prompt)
+        if self.global_shift is not None:
+            # Only a cloud that is actually being shifted pays for a second
+            # pass, and it is the one case where the shift has to be applied
+            # in float64, before the cast: subtracting it from coordinates
+            # already rounded to float32 is exactly the precision loss the
+            # shift exists to avoid.
+            report("Applying global shift")
+            self.coords, _ = self._read_coords(self.global_shift, out=self.coords)
 
         report("Reading tree labels")
-        self.labels, self.label_colors = self._decode_labels(self._mm)
-        self.labels = np.asarray(self.labels).astype(np.int32)
+        self.labels, self.label_colors = self._read_labels()
 
         # New tree IDs must clear every label in the *file*, including trees
         # that decimation may be about to drop from the working set below.
@@ -328,17 +356,62 @@ class _BaseCatalog:
         return idx if self._sub_idx is None else self._sub_idx[idx]
 
     # -- global shift ------------------------------------------------------
+    def _read_coords(self, shift, out: np.ndarray | None = None):
+        """``(coords, (mins, maxs))``: every point's coordinates as float32,
+        with ``shift`` added first when given, plus the cloud's true bounds
+        measured in float64 before the cast.
+
+        Read in chunks into one preallocated array (reusing ``out`` when the
+        caller has one to refill), so the peak is the array itself rather
+        than the array plus a float64 copy of the whole cloud.
+        """
+        if out is None:
+            out = np.empty((self.count, 3), dtype=np.float32)
+        mins = np.full(3, np.inf)
+        maxs = np.full(3, -np.inf)
+        for start in range(0, self.count, _CHUNK):
+            stop = min(start + _CHUNK, self.count)
+            block = self._decode_coords_raw(self._mm[start:stop])
+            np.minimum(mins, block.min(axis=0), out=mins)
+            np.maximum(maxs, block.max(axis=0), out=maxs)
+            if shift is not None:
+                block += shift
+            out[start:stop] = block
+        return out, (mins, maxs)
+
+    def _read_labels(self):
+        """``(labels int32, label_colors)`` for every point in the file.
+
+        Chunked, like the coordinates: :func:`io._normalize_labels` widens
+        to int64 and builds a mask and a ``np.where`` result on the way to
+        int32, so doing it in one bite costs about 20 bytes a point in
+        temporaries — 10GB on a 480M-point plot — for a 4-byte-a-point
+        answer. An RGB-segmented cloud is decoded whole instead: there the
+        label *is* the colour, numbered across the file's distinct colours,
+        which a chunk can't know.
+        """
+        if self.is_rgb:
+            labels, colors = self._decode_labels(self._mm)
+            return np.asarray(labels).astype(np.int32), colors
+        out = np.empty(self.count, dtype=np.int32)
+        for start in range(0, self.count, _CHUNK):
+            stop = min(start + _CHUNK, self.count)
+            block, _colors = self._decode_labels(self._mm[start:stop])
+            out[start:stop] = block
+        return out, None
+
     def _resolve_global_shift(
-        self, raw_coords: np.ndarray, shift_prompt: ShiftPrompt | None
+        self, bounds: tuple[np.ndarray, np.ndarray],
+        shift_prompt: ShiftPrompt | None,
     ) -> np.ndarray | None:
         """``None`` (load unshifted) unless the cloud's coordinates are large
         enough to need it *and* a prompt is wired up and says yes — see
         :data:`ShiftPrompt`. Never shifts on its own initiative: an
         unattended/headless open (no ``shift_prompt``) always gets the file's
         original coordinates, unchanged."""
-        if shift_prompt is None or not raw_coords.size:
+        if shift_prompt is None or not self.count:
             return None
-        mins, maxs = raw_coords.min(axis=0), raw_coords.max(axis=0)
+        mins, maxs = bounds
         if not needs_global_shift(mins, maxs):
             return None
 
@@ -454,9 +527,16 @@ class _BaseCatalog:
         self.records: dict[int, TreeRecord] = {}
         if not uniq.size:
             return
-        sorted_coords = self.coords[self.order]
-        mins = np.minimum.reduceat(sorted_coords, starts, axis=0)
-        maxs = np.maximum.reduceat(sorted_coords, starts, axis=0)
+        # One axis at a time: the label-sorted gather is the widest
+        # temporary here, and three (N,) columns in turn peak at a third of
+        # the (N, 3) copy — 2GB rather than 6GB on a 480M-point plot.
+        mins = np.empty((starts.size, 3), dtype=self.coords.dtype)
+        maxs = np.empty_like(mins)
+        for axis in range(3):
+            column = self.coords[:, axis][self.order]
+            np.minimum.reduceat(column, starts, out=mins[:, axis])
+            np.maximum.reduceat(column, starts, out=maxs[:, axis])
+            del column
         for k, lab in enumerate(uniq.tolist()):
             if lab in (UNASSIGNED, NOISE):
                 continue

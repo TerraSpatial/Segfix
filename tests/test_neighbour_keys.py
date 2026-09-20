@@ -98,3 +98,44 @@ def test_with_no_neighbours_the_keys_say_so(panel):
     _select(seg, 1)
     p.send_to_nth_neighbour(1)
     assert "No neighbouring trees" in said[-1]
+
+
+def _button_texts(panel):
+    grid = panel.neighbour_grid
+    return [grid.itemAt(i).widget().text().strip() for i in range(grid.count())]
+
+
+def test_each_button_wears_the_key_that_presses_it(panel):
+    p, _seg, _cloud, _said = panel
+    from segfix.widgets import NEIGHBOUR_KEYCAPS
+
+    assert _button_texts(p) == [f"{NEIGHBOUR_KEYCAPS[0]} 2", f"{NEIGHBOUR_KEYCAPS[1]} 3"]
+
+
+def test_a_neighbour_past_the_keys_wears_no_number(panel):
+    """A seventh tree still gets its button, and still works with the
+    mouse; it just has no key to advertise."""
+    p, seg, _cloud, _said = panel
+    from segfix.model import PointCloud
+    from segfix.widgets import NEIGHBOUR_KEYCAPS, NEIGHBOUR_KEYS
+
+    # One tree in the middle, touching six others.
+    rng = np.random.default_rng(1)
+    middle = rng.random((60, 3)) * 0.5
+    blocks, labels = [middle], [np.full(60, 1)]
+    for k in range(NEIGHBOUR_KEYS + 1):
+        angle = 2 * np.pi * k / (NEIGHBOUR_KEYS + 1)
+        shift = np.array([np.cos(angle), np.sin(angle), 0.0]) * 0.4
+        blocks.append(rng.random((60, 3)) * 0.5 + shift)
+        labels.append(np.full(60, k + 2))
+    crowded = PointCloud(coords=np.concatenate(blocks).astype(np.float32),
+                         labels=np.concatenate(labels).astype(np.int32))
+    p.c.view.load_cloud(crowded)
+    seg.set_cloud(crowded)
+    p._set_current(1, fly=False)
+
+    texts = _button_texts(p)
+    assert len(texts) == NEIGHBOUR_KEYS + 1
+    for text, keycap in zip(texts, NEIGHBOUR_KEYCAPS):
+        assert text.startswith(keycap)
+    assert texts[NEIGHBOUR_KEYS][0] not in NEIGHBOUR_KEYCAPS  # just the id

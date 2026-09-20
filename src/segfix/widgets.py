@@ -62,6 +62,12 @@ from .viewer import (
 #: left hand goes without moving. Further neighbours keep their button.
 NEIGHBOUR_KEYS = 5
 
+#: The key each of those buttons answers to, drawn on the button.
+#: Circled digits, not the keycap emoji (1\ufe0f\u20e3): Qt renders that
+#: sequence as nothing at all with Noto Color Emoji and as an empty box
+#: without it, while these are in every UI font we have met.
+NEIGHBOUR_KEYCAPS = ("\u2460", "\u2461", "\u2462", "\u2463", "\u2464")
+
 CLUSTER_GAP_FACTORS = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0)
 #: Start as tight as it goes: a first click is a small seed, and each repeat
 #: click on the same spot loosens it a step (see ClusterTool). Switching the
@@ -1802,7 +1808,10 @@ class SegFixWidget(QWidget):
                 np.array([nid]), self.c.cloud.label_colors
             )[0]
             r, g, b = (int(v * 255) for v in rgba[:3])
-            btn = QPushButton(f" {nid}")
+            keycap = (
+                f"{NEIGHBOUR_KEYCAPS[i]} " if i < NEIGHBOUR_KEYS else ""
+            )
+            btn = QPushButton(f" {keycap}{nid}")
             swatch = QPixmap(12, 12)
             swatch.fill(QColor(r, g, b))
             btn.setIcon(QIcon(swatch))

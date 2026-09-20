@@ -80,12 +80,19 @@ ProgressFn = Callable[[str, float], None]
 # 4 / 17 / 13 / 38 / 28 percent. Only the ratios matter; leaving the old
 # 55% in place would race the bar through the longest phase and then sit on
 # "Indexing trees" for a third of the wait.
+#
+# Applying a shift is a second decode of the same coordinates, so it is
+# worth what the first one is: 0.77s against 0.82s on a 6.5M-point LAS.
+# It went in at the coordinate read's own 5%, and the five phases that were
+# already here keep their ratios to one another, each scaled by 1/1.05 so
+# the six still sum to 1.
 _LOAD_PHASES = (
     ("Reading coordinates", 0.05),
-    ("Reading tree labels", 0.17),
-    ("Measuring point density", 0.13),
-    ("Downsampling", 0.37),
-    ("Indexing trees", 0.28),
+    ("Applying global shift", 0.05),
+    ("Reading tree labels", 0.16),
+    ("Measuring point density", 0.12),
+    ("Downsampling", 0.35),
+    ("Indexing trees", 0.27),
 )
 
 # Where a save's own phases sit on the bar: everything before is the

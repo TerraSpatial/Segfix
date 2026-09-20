@@ -292,6 +292,74 @@ def test_catalog_applies_a_shift_when_prompt_accepts_it(tmp_path):
     np.testing.assert_allclose(cloud.coords, cat.coords[gidx], atol=1e-3)
 
 
+def test_a_shifted_open_reports_progress_without_blowing_up(tmp_path):
+    """The shift pass reports a phase like every other, and _PhaseReporter
+    looks that phase up in _LOAD_PHASES.
+
+    It was missing from the table, so the lookup raised KeyError and the app
+    turned it into "could not be opened: 'Applying global shift'". Only a
+    georeferenced cloud whose shift was *accepted* reached it, and only with
+    a progress callback attached -- which is every open in the app and no
+    open in these tests, so a UTM survey could not be opened at all.
+    """
+    big = np.array([204300.0, 7223250.0, 5.0]) + np.random.RandomState(5).rand(30, 3) * 5
+    tid = np.repeat([1, 2, 0], 10)
+    path = tmp_path / "big.las"
+    _write_arbor_las(path, big, tid, offsets=(204000.0, 7223000.0, 0.0))
+
+    seen = []
+    cat = open_catalog(
+        str(path),
+        shift_prompt=lambda mins, maxs, suggested: tuple(suggested),
+        progress=lambda message, fraction: seen.append((message, fraction)),
+    )
+
+    assert cat.global_shift is not None
+    assert any("global shift" in message for message, _ in seen), seen
+    # and the bar only ever moves forward, ending where it should
+    fractions = [fraction for _, fraction in seen]
+    assert fractions == sorted(fractions), seen
+    assert 0.0 <= min(fractions) and max(fractions) == 1.0
+
+
+def test_every_phase_the_loader_reports_is_in_the_table(tmp_path):
+    """A phase name is a string in two places -- the report() call and
+    _LOAD_PHASES -- and nothing but this ties them together. Drive a load
+    that hits every optional phase and check the reporter accepts them all.
+    """
+    from segfix.treecatalog import _LOAD_PHASES
+
+    # Dense enough to be offered decimation, and far enough out to be
+    # offered a shift, so both optional phases run.
+    rng = np.random.RandomState(6)
+    pts = np.array([204300.0, 7223250.0, 5.0]) + rng.rand(4000, 3) * 0.25
+    tid = np.repeat([1, 2], 2000)
+    path = tmp_path / "dense_big.las"
+    _write_arbor_las(path, pts, tid, offsets=(204000.0, 7223000.0, 0.0))
+
+    seen = []
+    open_catalog(
+        str(path),
+        shift_prompt=lambda mins, maxs, suggested: tuple(suggested),
+        density_prompt=lambda spacing, count, suggested, kept: suggested,
+        progress=lambda message, fraction: seen.append(message),
+    )
+
+    known = {name for name, _ in _LOAD_PHASES} | {"Ready"}
+    reported = {message.rstrip("…") for message in seen}
+    assert reported <= known, reported - known
+    assert "Applying global shift" in reported
+    assert "Downsampling" in reported
+
+
+def test_the_phase_weights_add_up(tmp_path):
+    """They are shares of one bar; if they do not sum to 1 the bar either
+    stops short or runs past its own end."""
+    from segfix.treecatalog import _LOAD_PHASES
+
+    assert sum(weight for _, weight in _LOAD_PHASES) == pytest.approx(1.0)
+
+
 def test_catalog_prompt_declining_leaves_coordinates_unshifted(tmp_path):
     big = np.array([204300.0, 7223250.0, 5.0]) + np.random.RandomState(4).rand(20, 3) * 5
     tid = np.repeat([1, 0], 10)

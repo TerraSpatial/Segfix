@@ -1,4 +1,4 @@
-# segfix
+# Segfix
 
 [![PyPI](https://img.shields.io/pypi/v/segfix)](https://pypi.org/project/segfix/)
 
@@ -33,9 +33,9 @@ pip install segfix
 ```
 
 The startup dialog tells you when a newer release is on PyPI, and its
-**Update…** button runs `pip install --upgrade` for you (restart segfix
-afterwards). On Windows, which can't replace a program while it runs, segfix
-closes first and the update installs in its own window; start segfix again
+**Update…** button runs `pip install --upgrade` for you (restart Segfix
+afterwards). On Windows, which can't replace a program while it runs, Segfix
+closes first and the update installs in its own window; start Segfix again
 when that window says it's done. Running from a clone instead, it tracks new commits on the branch
 you're on and updates with `git pull` + `pip install -e .`, so a development
 checkout stays a checkout.
@@ -113,13 +113,13 @@ of one tree, and on save patch only the label bytes that changed.
 [raycloudtools](https://github.com/csiro-robotics/raycloudtools)' `rayextract
 trees` writes `<plot>_segmented.ply`, a binary PLY with no label column, each
 point instead **coloured by tree** (`x y z time nx ny nz red green blue alpha`,
-double xyz). segfix detects the RGB encoding, maps each distinct colour to a
+double xyz). Segfix detects the RGB encoding, maps each distinct colour to a
 tree, and treats pure black `(0, 0, 0)` as unsegmented. Import the `.ply`
 directly; **Save** patches the colour bytes of points whose tree changed, in
 place, so the file stays in exactly the format `rayextract` produced.
 
 One caveat: noise (`X`) and unassigned points are **both** written back as black,
-so once such a file is reloaded the two are indistinguishable (segfix's
+so once such a file is reloaded the two are indistinguishable (Segfix's
 `.segfix.json` sidecar still remembers which were noise for the current
 project). New trees created during editing (`S`, splits) get a deterministic
 colour derived from their id.
@@ -128,14 +128,14 @@ colour derived from their id.
 
 [arbor](https://github.com/r-lidar/arbor)'s pipeline (`arbor segment …`) writes
 `<plot>_output/<plot>_segmented.laz`, a point cloud with a per-point `treeID`
-Extra-Bytes column (`0` = unassigned). Import that `.laz` directly: segfix
+Extra-Bytes column (`0` = unassigned). Import that `.laz` directly: Segfix
 decompresses it to a `.las` working copy in the project folder (the original
 `.laz` is never touched), you fix the `treeID`s with the workflow below, and
 **Save** patches the `.las` in place *and* re-compresses a fresh `.laz` beside
 it for arbor to re-read.
 
 One caveat: if a cloud's `treeID` column is an *unsigned* type, points you
-dismiss as noise (`X`) are written back as `0` (unassigned), segfix's own
+dismiss as noise (`X`) are written back as `0` (unassigned), Segfix's own
 `.segfix.json` sidecar still remembers they were noise, but a reader of the LAS
 alone cannot tell noise from unassigned. (arbor writes a signed `treeID`, so
 this does not apply to its output.)
@@ -143,12 +143,12 @@ this does not apply to its output.)
 ### Large coordinates
 
 Georeferenced clouds (UTM, State Plane, …) have coordinates in the millions,
-while the detail that matters for fixing a segmentation is sub-metre. segfix
+while the detail that matters for fixing a segmentation is sub-metre. Segfix
 stores coordinates as 32-bit floats, as the GPU does, and a float32 carries only
 about 7 significant digits: a northing around 7,000,000 m is kept to the nearest
 half metre.
 
-So when any coordinate is more than 10 km from the origin, segfix offers a
+So when any coordinate is more than 10 km from the origin, Segfix offers a
 **global shift** on load, the way CloudCompare does: a round offset, added to
 every coordinate, that brings the cloud near the origin. The suggested shift
 puts the cloud's minimum corner within a metre of the origin; you can edit X, Y
@@ -159,12 +159,12 @@ patches only the label (or, for RGB-segmented PLY, colour) bytes, so the file
 keeps its real, georeferenced coordinates byte for byte.
 
 If you keep the original coordinates, the cloud loads with that lost precision,
-and segfix skips the dense-cloud check below: a spacing measured on coordinates
+and Segfix skips the dense-cloud check below: a spacing measured on coordinates
 rounded to half a metre would be meaningless, so it won't offer to downsample.
 
 ### Dense clouds
 
-On load segfix measures the cloud's typical point spacing. If points are closer
+On load Segfix measures the cloud's typical point spacing. If points are closer
 than **2 cm** it offers to downsample for the session, one point per voxel (3 cm
 by default, editable in the prompt), which is plenty to see and re-label a tree
 but a fraction of the points to draw and lasso. The prompt shows what the size
@@ -197,7 +197,7 @@ The menu bar carries the session-level actions: **File ▸ Open Project…**
 (`Ctrl+O`, reopens the startup dialog and switches project without a manual
 restart), **Save Project** (`Ctrl+S`) and **Export Trees…**; **Edit ▸ Undo / Redo** (`Ctrl+Z` /
 `Ctrl+Shift+Z`); **Preferences ▸ Theme ▸ Light / Dark**, applied immediately
-and remembered (via `QSettings`) for next launch; and **Help ▸ About segfix**
+and remembered (via `QSettings`) for next launch; and **Help ▸ About Segfix**
 for the version, links, and full MIT licence.
 
 Navigation matches CloudCompare: clouds open **Z-up**, **left-drag rotates,
@@ -320,7 +320,7 @@ to the right edge of the 3D view, next to the points they act on.
    session — with every column and the file's own coordinates, so an exported
    tree still lands in the right place in any other tool. Unassigned points
    and anything dismissed as noise aren't trees and aren't written. Trees are
-   exported as the saved file has them, so segfix offers to save first. If
+   exported as the saved file has them, so Segfix offers to save first. If
    any trees are marked Done it also asks which to write — all of them, or
    only the Done ones — for when a plot is reviewed for the few trees you
    actually need.

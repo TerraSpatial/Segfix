@@ -7,8 +7,6 @@ segmented LiDAR cloud, see each tree in its own colour, and correct mistakes by
 lassoing points and reassigning, splitting off, or dismissing them, then save
 back to a corrected version of the input, retaining all fields.
 
-<img alt="Segfix Screenshot" src="https://github.com/user-attachments/assets/03a63367-6350-4198-99ad-c29a593d971d" />
-
 ## Walkthrough video
 
 A 12-minute captioned tour of every tool, fixing every tree in the example

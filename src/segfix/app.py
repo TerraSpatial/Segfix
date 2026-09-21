@@ -310,21 +310,57 @@ def _open_project(win, panel, scene=None) -> None:
     if choice is None:
         return
     open_path, registry_path, kind = choice
-    # main() records it in the registry after the re-exec.
+    # main() records it in the registry after the relaunch.
     os.environ["SEGFIX_OPEN"] = open_path
     os.environ["SEGFIX_OPEN_REGISTRY"] = registry_path
     os.environ["SEGFIX_OPEN_KIND"] = kind
-    # Replace this process; -c so it doesn't matter how segfix was launched
-    # (console script, -m, IDE). User CLI flags are carried across.
-    os.execv(
-        sys.executable,
-        [
-            sys.executable,
-            "-c",
-            "import sys; from segfix.app import main; sys.exit(main())",
-            *sys.argv[1:],
-        ],
-    )
+    _relaunch()
+
+
+#: What a relaunched interpreter runs: -c, so it doesn't matter how segfix
+#: was started this time (console script, -m, an IDE).
+_RELAUNCH_CODE = "import sys; from segfix.app import main; sys.exit(main())"
+
+
+def relaunch_command() -> list[str]:
+    """The command that starts segfix again the way this one was started,
+    carrying the user's CLI flags across.
+
+    A frozen build (the Windows installer or portable zip) *is* segfix:
+    ``sys.executable`` is ``segfix.exe``, which takes segfix's own flags and
+    would choke on ``-c``. Anything else is a Python interpreter, told to
+    run segfix's main.
+    """
+    from .update import is_frozen
+
+    if is_frozen():
+        return [sys.executable, *sys.argv[1:]]
+    return [sys.executable, "-c", _RELAUNCH_CODE, *sys.argv[1:]]
+
+
+def _relaunch() -> None:
+    """Replace this segfix with a fresh one, for Open Project.
+
+    On Linux and macOS that is ``os.execv``: the same process, rebuilt from
+    scratch. Not on Windows, where ``exec`` never replaced the process in
+    the first place — it starts a new one and exits the old — and, worse,
+    passes the arguments unquoted: the ``-c`` code arrived as ``-c import``
+    and died with a SyntaxError, closing the window with nothing reopened
+    (issue #3). There a ``Popen``, which quotes each argument properly,
+    starts the new segfix and this one quits in the ordinary way.
+    """
+    import os
+
+    cmd = relaunch_command()
+    if sys.platform == "win32":
+        import subprocess
+
+        from qtpy.QtWidgets import QApplication
+
+        subprocess.Popen(cmd)
+        QApplication.instance().quit()
+        return
+    os.execv(cmd[0], cmd)
 
 
 def _export_trees(win, panel, catalog) -> None:

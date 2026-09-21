@@ -289,3 +289,103 @@ def test_the_menu_handler_saves_first_then_writes_every_tree(tmp_path, monkeypat
     assert written == ["plot_tree_1.ply"]  # tree 2 was merged into 1
     assert io.load(str(out / "plot_tree_1.ply")).n_points == 8
     assert "Exported 1 tree(s)" in view.status
+
+
+# -- just the trees marked Done (issue #3) --------------------------------------
+def test_export_can_take_just_a_subset(tmp_path):
+    coords, labels = _grid(3, [1, 2, 5])
+    cat = open_catalog(_ply(tmp_path, coords, labels))
+    written = export.export_trees(cat, str(tmp_path / "out"), only={2, 5, 99})
+    # 99 isn't in the file any more (merged away, say): quietly skipped.
+    assert [Path(p).name for p in written] == ["plot_tree_2.ply", "plot_tree_5.ply"]
+
+
+def test_the_done_list_is_read_from_the_progress_sidecar(tmp_path):
+    import json
+
+    from segfix.scene_ui import read_done
+
+    cloud = tmp_path / "plot.ply"
+    assert read_done(str(cloud)) == set()                    # no sidecar yet
+    Path(f"{cloud}.segfix.json").write_text(json.dumps({"done": [3, 1]}))
+    assert read_done(str(cloud)) == {1, 3}
+    Path(f"{cloud}.segfix.json").write_text("{not json")
+    assert read_done(str(cloud)) == set()                    # unreadable: none
+
+
+@pytest.fixture
+def qapp():
+    """A QApplication that outlives the test body: one with no surviving
+    reference is collected at once, and the next widget crashes."""
+    os = __import__("os")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("qtpy")
+    from qtpy.QtWidgets import QApplication
+
+    yield QApplication.instance() or QApplication([])
+
+
+def _run_export_menu(tmp_path, monkeypatch, done, choice):
+    """Drive File > Export Trees... with ``done`` marked, answering the
+    which-trees question with the button whose text starts ``choice``.
+    Returns (files written, whether the question was asked)."""
+    import json
+
+    pytest.importorskip("qtpy")
+    from qtpy.QtWidgets import QFileDialog, QMessageBox
+
+    from segfix import app, progress_ui
+
+    coords, labels = _grid(3, [1, 2, 5])
+    path = _ply(tmp_path, coords, labels)
+    if done:
+        Path(f"{path}.segfix.json").write_text(json.dumps({"done": sorted(done)}))
+    cat = open_catalog(path)
+
+    asked = []
+
+    def answer(box):
+        asked.append(box.text())
+        for button in box.buttons():
+            if button.text().replace("&", "").startswith(choice):
+                button.click()
+                return 0
+        raise AssertionError(f"no {choice!r} button in {[b.text() for b in box.buttons()]}")
+
+    out = tmp_path / "trees"
+    monkeypatch.setattr(QMessageBox, "exec", answer)
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(out))
+    monkeypatch.setattr(
+        progress_ui, "run_with_progress",
+        lambda parent, title, detail, work: work(
+            lambda *a: None, lambda fn, *args: fn(*args)
+        ),
+    )
+    panel = type("P", (), {"c": type("C", (), {"view": type("V", (), {"status": ""})()})(),
+                           "on_save": lambda self: None})()
+    app._export_trees(None, panel, cat)
+    written = sorted(p.name for p in out.iterdir()) if out.exists() else []
+    return written, asked
+
+
+def test_only_the_trees_marked_done(tmp_path, monkeypatch, qapp):
+    written, asked = _run_export_menu(tmp_path, monkeypatch, {1, 5}, "Only the 2")
+    assert written == ["plot_tree_1.ply", "plot_tree_5.ply"]
+    assert asked == ["2 of 3 trees are marked Done. Which do you want to export?"]
+
+
+def test_or_all_of_them(tmp_path, monkeypatch, qapp):
+    written, _asked = _run_export_menu(tmp_path, monkeypatch, {1, 5}, "All 3")
+    assert written == ["plot_tree_1.ply", "plot_tree_2.ply", "plot_tree_5.ply"]
+
+
+def test_cancel_exports_nothing(tmp_path, monkeypatch, qapp):
+    written, _asked = _run_export_menu(tmp_path, monkeypatch, {1}, "Cancel")
+    assert written == []
+
+
+def test_with_nothing_done_there_is_no_question(tmp_path, monkeypatch, qapp):
+    written, asked = _run_export_menu(tmp_path, monkeypatch, set(), "unused")
+    assert asked == []
+    assert len(written) == 3

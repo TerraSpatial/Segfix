@@ -32,6 +32,21 @@ from .viewer import busy
 DEFAULT_REACH = 1.0  # metres; matches SegFixWidget's own "reach" spinner default
 
 
+def read_done(cloud_path: str) -> set[int]:
+    """The trees marked Done for the cloud at ``cloud_path``, from the
+    ``<cloud>.segfix.json`` progress sidecar beside it; empty if there is no
+    sidecar yet or it can't be read."""
+    path = f"{cloud_path}.segfix.json"
+    if not os.path.exists(path):
+        return set()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return {int(t) for t in data.get("done", [])}
+    except (OSError, ValueError):
+        return set()
+
+
 class SceneController:
     """Owns the catalog and the shared segfix editing controller."""
 
@@ -70,6 +85,18 @@ class SceneController:
     def _flush(self) -> None:
         if self._global_idx is not None:
             self.catalog.apply(self.seg.cloud, self._global_idx)
+
+    def has_unsaved_edits(self) -> bool:
+        """Whether anything edited this session hasn't been saved — on the
+        tree loaded now *or* any tree visited before it.
+
+        The loaded cloud's undo stack can't answer that: it starts empty on
+        every tree switch, while the edits made on the previous trees sit in
+        the catalog. So the live scene is folded in first, as a switch or a
+        save would, and the catalog is asked.
+        """
+        self._flush()
+        return self.catalog.has_unsaved_edits()
 
     def _save(self) -> str:
         from .progress_ui import run_with_progress
@@ -143,15 +170,7 @@ class SceneWidget(QWidget):
         """Reuse SegFixWidget's own progress sidecar (keyed by source path,
         which stays constant across tree switches in this mode) so the two
         panels' "done" state stays in sync without duplicating a file."""
-        path = f"{self.c.catalog.path}.segfix.json"
-        if not os.path.exists(path):
-            return set()
-        try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
-            return {int(t) for t in data.get("done", [])}
-        except (OSError, ValueError):
-            return set()
+        return read_done(self.c.catalog.path)
 
     def _populate(self) -> None:
         done = self._read_done()

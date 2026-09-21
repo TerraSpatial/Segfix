@@ -51,9 +51,12 @@ def group_rows(labels: np.ndarray) -> dict[int, np.ndarray]:
 
 
 def export_trees(
-    catalog, out_dir: str, progress: ProgressFn | None = None
+    catalog, out_dir: str, progress: ProgressFn | None = None,
+    only: set[int] | None = None,
 ) -> list[str]:
-    """Write every tree in ``catalog``'s file to ``out_dir``, one file each.
+    """Write every tree in ``catalog``'s file to ``out_dir``, one file each —
+    or, given ``only``, just the trees whose IDs are in it (a Done list, say;
+    IDs no longer in the file, because a tree was merged away, are ignored).
 
     Returns the paths written, in tree-ID order. ``progress``
     (:data:`~segfix.treecatalog.ProgressFn`) is called per tree, which is
@@ -63,6 +66,8 @@ def export_trees(
     if progress is not None:
         progress("Reading tree labels…", 0.0)
     groups = group_rows(catalog.file_labels())
+    if only is not None:
+        groups = {label: rows for label, rows in groups.items() if label in only}
     written: list[str] = []
     if not groups:
         return written

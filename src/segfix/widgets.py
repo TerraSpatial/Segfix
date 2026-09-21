@@ -667,8 +667,9 @@ class SegFixWidget(QWidget):
         )
         self.show_unassigned.toggled.connect(self._on_show_unassigned)
         view_row.addWidget(self.show_unassigned)
-        self._button(view_row, "Hide others", self.on_hide_neighbours, "hide")
-        self._button(view_row, "Fade others", self.on_fade_neighbours, "fade")
+        self._button(view_row, "Hide others (G)", self.on_hide_neighbours, "hide")
+        self._button(view_row, "Fade others (Shift+G)", self.on_fade_neighbours,
+                     "fade")
         view_row.addStretch(1)
         view.addLayout(view_row)
 
@@ -2079,7 +2080,7 @@ class SegFixWidget(QWidget):
 #: these (bar the legacy keys it also keeps).
 LEFT_HAND_KEYS = frozenset(
     "QWERT" "ASDFG" "ZXCVB" "12345"
-) | {"Esc", "Space", "Shift+Q", "Shift+W", "Shift+E", "Shift+C"}
+) | {"Esc", "Space", "Shift+Q", "Shift+W", "Shift+E", "Shift+C", "Shift+G"}
 
 
 def shortcut_bindings(panel) -> dict:
@@ -2113,6 +2114,10 @@ def shortcut_bindings(panel) -> dict:
         "S": panel.on_create_new,
         "D": panel.on_unassign,
         "F": panel.show_unassigned.toggle,
+        # Hiding the neighbours before a lasso is routine in a dense canopy,
+        # and was the last step of the loop that needed the mouse (issue #3).
+        "G": panel.on_hide_neighbours,
+        "Shift+G": panel.on_fade_neighbours,
         "X": panel.on_noise,
         "C": panel.cross_enable.toggle,
         # moving through the queue

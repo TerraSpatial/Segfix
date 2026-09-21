@@ -253,6 +253,7 @@ to the right edge of the 3D view, next to the points they act on.
    | `X` | Mark selection as noise, or the whole current tree if nothing is selected (dismiss a bush/wall in one key) |
    | `Delete` / `Backspace` | Same as `X` (mark noise) |
    | `F` | Show/hide the unassigned + noise points |
+   | `G` / `Shift+G` | Hide / fade every other loaded tree (press again to bring them back) |
    | `C` | Cross section on/off |
    | `Shift+Q` | Draw a lasso-section outline |
    | `Shift+C` | Lasso section on/off |
@@ -319,7 +320,10 @@ to the right edge of the 3D view, next to the points they act on.
    session — with every column and the file's own coordinates, so an exported
    tree still lands in the right place in any other tool. Unassigned points
    and anything dismissed as noise aren't trees and aren't written. Trees are
-   exported as the saved file has them, so segfix offers to save first.
+   exported as the saved file has them, so segfix offers to save first. If
+   any trees are marked Done it also asks which to write — all of them, or
+   only the Done ones — for when a plot is reviewed for the few trees you
+   actually need.
 
 ## Layout
 

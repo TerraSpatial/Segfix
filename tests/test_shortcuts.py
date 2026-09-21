@@ -42,6 +42,8 @@ def _panel():
         on_create_new=action("new tree"),
         on_unassign=action("unassign"),
         on_noise=action("noise"),
+        on_hide_neighbours=action("hide others"),
+        on_fade_neighbours=action("fade others"),
         _step=lambda step: fired.append(f"step {step:+d}"),
         send_to_nth_neighbour=lambda n: fired.append(f"neighbour {n}"),
     )
@@ -60,6 +62,7 @@ EXPECTED = {
     "Q": "lasso", "W": "lasso tree", "E": "cluster",
     "R": "gap -1", "T": "gap +1",
     "A": "add", "S": "new tree", "D": "unassign", "F": "show unassigned",
+    "G": "hide others", "Shift+G": "fade others",
     "X": "noise", "C": "cross section",
     "Z": "step -1", "V": "step +1",
     "1": "neighbour 1", "2": "neighbour 2", "3": "neighbour 3",

@@ -141,7 +141,42 @@ def _disable_window_ghosting() -> None:
         pass
 
 
+def _report_uncaught(exc_type, exc, tb) -> None:
+    """``sys.excepthook`` for the GUI: say what went wrong, and keep going.
+
+    Without a hook of its own, PyQt answers an exception raised inside a Qt
+    slot — a menu action, a button — by aborting the process, so the window
+    simply vanishes with nothing on screen to say why (issue #3 was one of
+    those). With one, PyQt calls it instead: the traceback still goes to the
+    terminal, and the user gets a message rather than a lost session.
+    """
+    import traceback
+
+    text = "".join(traceback.format_exception(exc_type, exc, tb))
+    sys.stderr.write(text)
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc, tb)
+        return
+    try:
+        from qtpy.QtWidgets import QApplication, QMessageBox
+
+        if QApplication.instance() is None:
+            return
+        box = QMessageBox(
+            QMessageBox.Icon.Critical,
+            "Something went wrong",
+            f"{exc_type.__name__}: {exc}\n\nsegfix is still running, but "
+            "save your work before carrying on. Please report this at "
+            "github.com/tim-devereux/segfix/issues with the details below.",
+        )
+        box.setDetailedText(text)
+        box.exec()
+    except Exception:
+        pass  # never let the reporter itself be the next crash
+
+
 def main(argv=None) -> int:
+    sys.excepthook = _report_uncaught
     _prefer_discrete_gpu()
     _disable_window_ghosting()
     parser = argparse.ArgumentParser(
@@ -236,10 +271,14 @@ def _about(parent) -> None:
     box.exec()
 
 
-def _open_project(win, panel) -> None:
+def _open_project(win, panel, scene=None) -> None:
     """Menu "Open Project…": offer to save, pick another project in the
     startup dialog, then re-exec segfix on it. Re-exec rather than an
     in-place swap so the catalog, docks and GL context all rebuild cleanly.
+
+    ``scene`` (the :class:`~segfix.scene_ui.SceneController`) is what knows
+    whether the session has unsaved edits: the loaded tree's undo stack only
+    covers the tree on screen, not the ones visited before it.
     """
     import os
 
@@ -247,7 +286,12 @@ def _open_project(win, panel) -> None:
 
     from .startup_ui import choose_project
 
-    if panel.c.cloud.can_undo():
+    # can_undo is a property, not a method: calling it raised TypeError here,
+    # which PyQt turns into an abort, and Open Project killed the window on
+    # every use since it was added (issue #3).
+    unsaved = (scene.has_unsaved_edits() if scene is not None
+               else panel.c.cloud.can_undo)
+    if unsaved:
         answer = QMessageBox.question(
             win,
             "Open another project",
@@ -309,17 +353,42 @@ def _export_trees(win, panel, catalog) -> None:
         if answer == QMessageBox.StandardButton.Save:
             panel.on_save()
 
+    # Plenty of people need a few trees per plot, not all of them (issue
+    # #3): offer just the ones marked Done, when there are any to offer.
+    from .scene_ui import read_done
+
+    done = read_done(catalog.path) & set(catalog.records)
+    only = None
+    if done:
+        box = QMessageBox(win)
+        box.setWindowTitle("Export trees")
+        box.setText(f"{len(done)} of {len(catalog.records)} trees are marked "
+                    "Done. Which do you want to export?")
+        all_btn = box.addButton(f"All {len(catalog.records)} trees",
+                                QMessageBox.ButtonRole.AcceptRole)
+        done_btn = box.addButton(f"Only the {len(done)} marked Done",
+                                 QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(all_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is done_btn:
+            only = done
+        elif clicked is not all_btn:
+            return
+    count = len(only) if only is not None else len(catalog.records)
+
     out_dir = QFileDialog.getExistingDirectory(
-        win, "Export every tree into this folder", os.path.dirname(catalog.path)
+        win, "Export the trees into this folder", os.path.dirname(catalog.path)
     )
     if not out_dir:
         return
     try:
         written = run_with_progress(
             win, "Exporting trees",
-            f"{len(catalog.records)} trees from {os.path.basename(catalog.path)}",
+            f"{count} trees from {os.path.basename(catalog.path)}",
             lambda report, ask: export.export_trees(
-                catalog, out_dir, progress=report
+                catalog, out_dir, progress=report, only=only
             ),
         )
     except Exception as exc:
@@ -332,7 +401,7 @@ def _export_trees(win, panel, catalog) -> None:
     )
 
 
-def _build_menus(win, panel, catalog=None) -> None:
+def _build_menus(win, panel, catalog=None, scene=None) -> None:
     """Window menu bar: File (open/save the project), Edit (undo/redo — the
     former "Session" panel box), Preferences (colour theme), Help (about)."""
     from qtpy.QtGui import QActionGroup
@@ -345,7 +414,7 @@ def _build_menus(win, panel, catalog=None) -> None:
     file_menu = bar.addMenu("&File")
     open_act = file_menu.addAction("Open Project…")
     open_act.setShortcut("Ctrl+O")
-    open_act.triggered.connect(lambda: _open_project(win, panel))
+    open_act.triggered.connect(lambda: _open_project(win, panel, scene))
     save_act = file_menu.addAction("Save Project")
     save_act.setShortcut("Ctrl+S")
     save_act.triggered.connect(panel.on_save)
@@ -566,7 +635,7 @@ def _run_scene(args) -> int:
     )
     win.resizeDocks([right_dock], [440], Qt.Orientation.Horizontal)
     panel.size_spin.setValue(args.point_size)
-    _build_menus(win, panel, catalog)
+    _build_menus(win, panel, catalog, scene_ctrl)
     bind_shortcuts(win, panel)
 
     decimated = (

@@ -14,7 +14,7 @@
 
 #define AppName "segfix"
 #define AppPublisher "Tim Devereux"
-#define AppURL "https://github.com/tim-devereux/segfix"
+#define AppURL "https://github.com/TerraSpatial/Segfix"
 #define AppExe "segfix.exe"
 
 [Setup]

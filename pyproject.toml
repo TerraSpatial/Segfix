@@ -39,8 +39,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/TerraSpatial/Segfix"
-Issues = "https://github.com/TerraSpatial/Segfix/issues"
+Homepage = "https://github.com/UQ-EORC/Segfix"
+Issues = "https://github.com/UQ-EORC/Segfix/issues"
 PyPI = "https://pypi.org/project/segfix/"
 
 [project.optional-dependencies]

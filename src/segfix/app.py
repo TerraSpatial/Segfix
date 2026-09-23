@@ -185,7 +185,7 @@ def _report_uncaught(exc_type, exc, tb) -> None:
             "Something went wrong",
             f"{exc_type.__name__}: {exc}\n\nsegfix is still running, but "
             "save your work before carrying on. Please report this at "
-            "github.com/TerraSpatial/Segfix/issues with the details below.",
+            "github.com/UQ-EORC/Segfix/issues with the details below.",
         )
         box.setDetailedText(text)
         box.exec()
@@ -279,8 +279,8 @@ def _about(parent) -> None:
         f"<b>segfix {display_version()}</b>"
         "<p>GUI tool to fix instance segmentation of tree point clouds.</p>"
         "<p>GPL-3.0-or-later&nbsp;&nbsp;·&nbsp;&nbsp;© 2026 Tim Devereux, The University of Queensland<br>"
-        "<a href='https://github.com/TerraSpatial/Segfix'>"
-        "github.com/TerraSpatial/Segfix</a></p>"
+        "<a href='https://github.com/UQ-EORC/Segfix'>"
+        "github.com/UQ-EORC/Segfix</a></p>"
     )
     licence = _read_license()
     if licence:

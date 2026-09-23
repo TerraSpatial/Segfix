@@ -9,17 +9,17 @@ back to a corrected version of the input, retaining all fields.
 
 ## Walkthrough video
 
-A 12-minute captioned tour of every tool, fixing every tree in the example
+A 13-minute captioned tour of every tool, fixing every tree in the example
 cloud from `scripts/make_sample.py`, including large coordinates and dense
 clouds. Click to watch:
 
-[![Watch the segfix walkthrough](https://raw.githubusercontent.com/TerraSpatial/Segfix/main/docs/walkthrough.jpg)](https://github.com/TerraSpatial/Segfix/releases/download/v1.0.0/segfix_walkthrough.mp4)
+[![Watch the segfix walkthrough](https://raw.githubusercontent.com/UQ-EORC/Segfix/main/docs/walkthrough.jpg)](https://github.com/UQ-EORC/Segfix/releases/download/v1.0.11/segfix_walkthrough.mp4)
 
 Testing is done on Fedora Linux 44, Windows 11 and macOS.
 
 ## Contributing
 
-Feedback, issues, and PRs all welcome. For issues please use [GitHub issues](https://github.com/TerraSpatial/Segfix/issues) (not a personal message) so the community can benefit.
+Feedback, issues, and PRs all welcome. For issues please use [GitHub issues](https://github.com/UQ-EORC/Segfix/issues) (not a personal message) so the community can benefit.
 
 ## Install
 
@@ -51,7 +51,7 @@ pip install segfix
 For development, or to get `scripts/make_sample.py`:
 
 ```bash
-git clone https://github.com/TerraSpatial/Segfix.git
+git clone https://github.com/UQ-EORC/Segfix.git
 cd segfix
 pip install -e .
 ```
@@ -59,7 +59,7 @@ pip install -e .
 ### On Windows
 
 Two ready-made builds on the
-[releases page](https://github.com/TerraSpatial/Segfix/releases), neither
+[releases page](https://github.com/UQ-EORC/Segfix/releases), neither
 needing admin and neither needing Python:
 
 **The installer** — `segfix-<version>-setup.exe`. Installs per-user by

@@ -196,7 +196,7 @@ The menu bar carries the session-level actions: **File ▸ Open Project…**
 restart), **Save Project** (`Ctrl+S`) and **Export Trees…**; **Edit ▸ Undo / Redo** (`Ctrl+Z` /
 `Ctrl+Shift+Z`); **Preferences ▸ Theme ▸ Light / Dark**, applied immediately
 and remembered (via `QSettings`) for next launch; and **Help ▸ About Segfix**
-for the version, links, and full MIT licence.
+for the version, links, and full GPL licence.
 
 Navigation matches CloudCompare: clouds open **Z-up**, **left-drag rotates,
 right-drag pans, wheel zooms**. **Double-click a point** while navigating to

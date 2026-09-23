@@ -1,3 +1,21 @@
+# segfix — fix instance segmentation of tree point clouds.
+# Copyright (C) 2026 Tim Devereux, The University of Queensland
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Command-line entry point.
 
 ``segfix`` always opens with a startup dialog to pick a recent project or
@@ -225,7 +243,7 @@ def main(argv=None) -> int:
 
 
 def _read_license() -> str | None:
-    """The MIT licence text — from the repo checkout segfix runs from, or
+    """The GPL licence text — from the repo checkout segfix runs from, or
     the installed distribution's metadata. ``None`` if neither is found."""
     from pathlib import Path
 
@@ -260,7 +278,7 @@ def _about(parent) -> None:
     box.setText(
         f"<b>segfix {display_version()}</b>"
         "<p>GUI tool to fix instance segmentation of tree point clouds.</p>"
-        "<p>MIT Licence&nbsp;&nbsp;·&nbsp;&nbsp;© 2026 Tim Devereux<br>"
+        "<p>GPL-3.0-or-later&nbsp;&nbsp;·&nbsp;&nbsp;© 2026 Tim Devereux, The University of Queensland<br>"
         "<a href='https://github.com/TerraSpatial/Segfix'>"
         "github.com/TerraSpatial/Segfix</a></p>"
     )

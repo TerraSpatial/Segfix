@@ -356,3 +356,31 @@ to the right edge of the 3D view, next to the points they act on.
 ```bash
 pytest        # core model, operations, and IO round-trip (no GUI needed)
 ```
+
+## Authors
+
+- Tim Devereux, The University of Queensland
+- Josh Rivory, The University of Queensland
+
+Development of this software was made possible by funding from The Terrestrial
+Ecosystem Research Network (TERN).
+
+## Citation
+
+If Segfix contributed to your work, please cite it:
+
+> Devereux, T. and Rivory, J. (2026). *Segfix: a GUI tool to fix the instance
+> segmentation of tree point clouds* (version 1.0.11) [Computer software].
+> The University of Queensland. https://github.com/UQ-EORC/Segfix
+
+```bibtex
+@software{segfix,
+  author       = {Devereux, Tim and Rivory, Josh},
+  title        = {Segfix: a GUI tool to fix the instance segmentation of
+                  tree point clouds},
+  year         = {2026},
+  version      = {1.0.11},
+  organization = {The University of Queensland},
+  url          = {https://github.com/UQ-EORC/Segfix}
+}
+```

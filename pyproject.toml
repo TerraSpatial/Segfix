@@ -10,7 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10,<3.13"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
-authors = [{name = "Tim Devereux, The University of Queensland", email = "devereux.tj@gmail.com"}]
+authors = [
+    {name = "Tim Devereux, The University of Queensland", email = "devereux.tj@gmail.com"},
+    {name = "Josh Rivory, The University of Queensland"},
+]
 keywords = ["lidar", "point-cloud", "segmentation", "forestry", "vispy"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",

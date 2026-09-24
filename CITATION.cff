@@ -1,0 +1,18 @@
+# GitHub reads this file for the repository's "Cite this repository" button.
+cff-version: 1.2.0
+title: "Segfix: a GUI tool to fix the instance segmentation of tree point clouds"
+message: "If Segfix contributed to your work, please cite it."
+type: software
+authors:
+  - given-names: Tim
+    family-names: Devereux
+    affiliation: The University of Queensland
+    email: devereux.tj@gmail.com
+  - given-names: Josh
+    family-names: Rivory
+    affiliation: The University of Queensland
+repository-code: "https://github.com/UQ-EORC/Segfix"
+url: "https://pypi.org/project/segfix/"
+license: GPL-3.0-or-later
+version: 1.0.11
+date-released: "2026-09-24"

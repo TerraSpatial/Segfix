@@ -460,6 +460,29 @@ class SegFixController:
     def selected_indices(self) -> np.ndarray:
         return np.flatnonzero(self.view.selected_mask)
 
+    def invert_selection(self) -> int:
+        """Select every shown point that isn't selected, and vice versa.
+
+        Bounded by ``view.shown``, not by the whole cloud: only shown points
+        can be selected in the first place (the lasso and the cluster tool
+        both intersect their result with it), so an inversion inside a cross
+        section, a lasso section, or a tree isolated out of its neighbours
+        has to stay inside that same subset — otherwise one keypress would
+        hand you the entire cloud hiding behind the slab.
+
+        With nothing selected this selects everything shown, which is the
+        "select all visible" the section tools otherwise had no way to ask
+        for. Returns how many points ended up selected.
+        """
+        size = len(self.view.coords)
+        shown = np.asarray(self.view.shown, dtype=bool)
+        if shown.shape[0] != size:
+            shown = np.ones(size, dtype=bool)
+        selected = self.view.selected_mask
+        if selected.shape[0] != size:
+            selected = np.zeros(size, dtype=bool)
+        return self.view.select(shown & ~selected)
+
     def _after_edit(self, message: str) -> None:
         # Recolour only the points whose label just moved (the op records them
         # on the cloud); a whole-cloud recompute per keystroke is the slow path.
@@ -685,9 +708,23 @@ class SegFixWidget(QWidget):
         )
         self.show_unassigned.toggled.connect(self._on_show_unassigned)
         view_row.addWidget(self.show_unassigned)
-        self._button(view_row, "Hide others (G)", self.on_hide_neighbours, "hide")
-        self._button(view_row, "Fade others (Shift+G)", self.on_fade_neighbours,
-                     "fade")
+        # Checkboxes, like the toggle beside them: all three turn something
+        # in the view on and off and stay on until turned off, and as push
+        # buttons the two "others" ones showed nothing of that state — with
+        # every neighbour hidden, "Hide others" looked exactly as it did
+        # with none hidden, and only the status line said which.
+        self.hide_others_cb = QCheckBox("Hide others (G)")
+        self.hide_others_cb.setToolTip(
+            "Hide every other loaded tree, leaving the tree under review"
+        )
+        self.hide_others_cb.toggled.connect(self._set_hide_others)
+        view_row.addWidget(self.hide_others_cb)
+        self.fade_others_cb = QCheckBox("Fade others (Shift+G)")
+        self.fade_others_cb.setToolTip(
+            "Ghost every other loaded tree - still shown, still selectable"
+        )
+        self.fade_others_cb.toggled.connect(self._set_fade_others)
+        view_row.addWidget(self.fade_others_cb)
         view_row.addStretch(1)
         view.addLayout(view_row)
 
@@ -831,6 +868,16 @@ class SegFixWidget(QWidget):
         sel.addLayout(crow)
         self.sel_info = QLabel()
         sel.addWidget(self.sel_info)
+        # Next to what it acts on: it reads the selection line above it and
+        # rewrites it. Stays enabled with nothing selected, where it means
+        # "select everything shown".
+        self.invert_btn = self._button(
+            sel, "Invert selection (B)", self.on_invert_selection, "invert"
+        )
+        self.invert_btn.setToolTip(
+            "Select every shown point that isn't selected - and only shown "
+            "points, so a cross section or lasso section still bounds it"
+        )
 
         sel.addWidget(
             self._subheading("Move selection into a tree")
@@ -1342,6 +1389,7 @@ class SegFixWidget(QWidget):
         self._table_updating = False
         self._update_done_title()
         self._sync_current({int(t) for t in vals})
+        self._sync_view_toggles()
 
     def _sync_current(self, existing: set[int]) -> None:
         """After a rebuild: keep reviewing the same tree, or advance if it
@@ -1383,6 +1431,9 @@ class SegFixWidget(QWidget):
             self.c.view.selected = set()
         self._update_tree_bbox([] if tid is None else [tid])
         self._update_current_info()
+        # "others" means others than this one, so the two toggles answer to
+        # a different set now.
+        self._sync_view_toggles()
         if changed and fly and tid is not None:
             self._fly_to(tid)
             self.c.view.status = (
@@ -1434,57 +1485,87 @@ class SegFixWidget(QWidget):
         span = float(np.max(pts.max(axis=0) - pts.min(axis=0)))
         self.c.view.fly_to(center, span)
 
-    def on_hide_neighbours(self) -> None:
-        """Toggle hiding every other tree currently loaded, leaving only the
-        tree under review visible — shows them again if they're all already
-        hidden.
+    def _other_loaded_trees(self) -> set[int]:
+        """The loaded trees that aren't the one under review.
 
-        This used to recompute "neighbouring" via a fresh distance test
-        against ``self.current`` every click. That under-hid in scene mode:
-        the loaded cloud is fixed at load time to one tree plus its one-hop
-        neighbours, but "current" moves to a different member of that group
-        as the review queue advances (Space/table clicks), and two loaded
-        trees needn't be within reach of *each other* even though both were
-        within reach of the tree originally picked. A tree loaded alongside
-        current is a neighbour regardless of which one is under review now,
-        so hide by loaded-set membership instead of recomputing distances.
+        Membership of the loaded set, not a fresh distance test: the cloud
+        is fixed at load time to one tree plus its one-hop neighbours, but
+        "current" moves to another member of that group as the queue
+        advances, and two loaded trees needn't be within reach of *each
+        other*. Recomputing distances from current therefore under-hid in
+        scene mode.
         """
         if self.current is None:
-            self.c.view.status = (
-                "No tree under review - press Space or click a table row"
-            )
+            return set()
+        return {int(t) for t in self.c.cloud.tree_ids} - {self.current}
+
+    def _needs_current(self) -> bool:
+        if self.current is not None:
+            return True
+        self.c.view.status = (
+            "No tree under review - press Space or click a table row"
+        )
+        return False
+
+    def _set_hide_others(self, hide: bool) -> None:
+        """The View group's "Hide others" toggle."""
+        if not self._needs_current():
+            self._sync_view_toggles()  # nothing happened; say so
             return
-        neighbours = {int(t) for t in self.c.cloud.tree_ids} - {self.current}
-        if neighbours and neighbours <= self.hidden_ids:
-            self.hidden_ids -= neighbours
-            verb = "Shown"
-        else:
-            self.hidden_ids |= neighbours
-            verb = "Hid"
-        self._refresh_tree_table()  # updates the 👁 checkboxes to match
+        others = self._other_loaded_trees()
+        self.hidden_ids = (
+            self.hidden_ids | others if hide else self.hidden_ids - others
+        )
+        self._refresh_tree_table()  # updates the per-tree eye checkboxes
         self._apply_visibility()
-        self.c.view.status = f"{verb} {len(neighbours)} other tree(s)"
+        self.c.view.status = (
+            f"{'Hid' if hide else 'Shown'} {len(others)} other tree(s)"
+        )
+
+    def _set_fade_others(self, fade: bool) -> None:
+        """The View group's "Fade others" toggle: same set as
+        :meth:`_set_hide_others`, but the others stay visible and
+        selectable."""
+        if not self._needs_current():
+            self._sync_view_toggles()
+            return
+        others = self._other_loaded_trees()
+        self.c.faded_ids = (
+            self.c.faded_ids | others if fade else self.c.faded_ids - others
+        )
+        self._refresh_tree_table()  # updates the per-tree Fade checkboxes
+        self._apply_transparency()
+        self.c.view.status = (
+            f"{'Faded' if fade else 'Restored'} {len(others)} other tree(s)"
+        )
+
+    def _sync_view_toggles(self) -> None:
+        """Point the two "others" toggles at the truth.
+
+        The same state is reachable one tree at a time through the table's
+        Hide and Fade columns, and the loaded set itself changes as the
+        queue advances, so neither toggle can just remember its own clicks.
+        """
+        others = self._other_loaded_trees()
+        for box, ids in ((getattr(self, "hide_others_cb", None), self.hidden_ids),
+                         (getattr(self, "fade_others_cb", None), self.c.faded_ids)):
+            if box is None:
+                continue
+            on = bool(others) and others <= ids
+            if box.isChecked() != on:
+                box.blockSignals(True)
+                box.setChecked(on)
+                box.blockSignals(False)
+
+    def on_hide_neighbours(self) -> None:
+        """G: flip "Hide others" — the key and the toggle are one control."""
+        if self._needs_current():
+            self.hide_others_cb.toggle()
 
     def on_fade_neighbours(self) -> None:
-        """Toggle fading every other tree currently loaded, so only the tree
-        under review is at full opacity — un-fades them if they're all faded
-        already. Same loaded-set logic as :meth:`on_hide_neighbours`, but the
-        others stay visible and selectable."""
-        if self.current is None:
-            self.c.view.status = (
-                "No tree under review - press Space or click a table row"
-            )
-            return
-        neighbours = {int(t) for t in self.c.cloud.tree_ids} - {self.current}
-        if neighbours and neighbours <= self.c.faded_ids:
-            self.c.faded_ids -= neighbours
-            verb = "Restored"
-        else:
-            self.c.faded_ids |= neighbours
-            verb = "Faded"
-        self._refresh_tree_table()  # updates the Fade checkboxes to match
-        self._apply_transparency()
-        self.c.view.status = f"{verb} {len(neighbours)} other tree(s)"
+        """Shift+G: flip "Fade others"."""
+        if self._needs_current():
+            self.fade_others_cb.toggle()
 
     def _apply_visibility(self) -> None:
         if not len(self.c.view.coords):
@@ -2003,6 +2084,17 @@ class SegFixWidget(QWidget):
             return
         self._apply(ops.reassign(self.c.cloud, idx, tid))
 
+    def on_invert_selection(self) -> None:
+        """B / the Invert selection button: swap selected for unselected,
+        within what's on screen (see
+        :meth:`SegFixController.invert_selection`)."""
+        if not len(self.c.view.coords):
+            return
+        total = self.c.invert_selection()
+        bounded = not np.asarray(self.c.view.shown, dtype=bool).all()
+        where = " of the shown points" if bounded else ""
+        self.c.view.status = f"Inverted selection: {total:,} points{where}"
+
     def on_send_to_neighbour(self, target_id: int) -> None:
         """Selection → a neighbouring tree, without switching current."""
         idx = self._require_selection()
@@ -2130,6 +2222,9 @@ def shortcut_bindings(panel) -> dict:
             for n in range(1, NEIGHBOUR_KEYS + 1)
         },
         "S": panel.on_create_new,
+        # Invert sits on B, beside the other selection-wide keys and still
+        # under the same hand: it is a selection op, not an edit.
+        "B": panel.on_invert_selection,
         "D": panel.on_unassign,
         "F": panel.show_unassigned.toggle,
         # Hiding the neighbours before a lasso is routine in a dense canopy,

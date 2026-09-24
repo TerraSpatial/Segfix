@@ -104,6 +104,19 @@ def _merge(p: QPainter) -> None:
     p.drawEllipse(QRectF(14, 9, 14, 14))
 
 
+def _invert(p: QPainter) -> None:
+    """Half-filled circle: swap what's selected for what isn't."""
+    p.setPen(_pen(AMBER))
+    p.drawEllipse(QRectF(6, 6, 20, 20))
+    p.setPen(Qt.NoPen)
+    p.setBrush(AMBER)
+    path = QPainterPath(QPointF(16, 6))
+    path.arcTo(QRectF(6, 6, 20, 20), 90, 180)
+    path.closeSubpath()
+    p.drawPath(path)
+    p.setBrush(Qt.NoBrush)
+
+
 def _noise(p: QPainter) -> None:
     p.setPen(_pen(RED, 3.0))
     p.drawLine(QPointF(9, 9), QPointF(23, 23))
@@ -239,6 +252,7 @@ _DRAW = {
     "new": _new_tree,
     "merge": _merge,
     "noise": _noise,
+    "invert": _invert,
     "unassign": _unassign,
     "split": _split,
     "isolate": _isolate,

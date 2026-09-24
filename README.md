@@ -226,14 +226,19 @@ to the right edge of the 3D view, next to the points they act on.
    wireframe box marks it. To declutter a crowded view, use the 👁 (hide) or
    **Fade** column in the lower table on specific trees, or **Hide others** /
    **Fade others** in the top-bar **View** group to do it to every loaded tree
-   except the one under review. Fading keeps a tree visible as faint context
+   except the one under review (both stay ticked while they're on, and follow
+   the per-tree columns). Fading keeps a tree visible as faint context
    and still lets the lasso grab its points; hiding removes it from both.
 2. Inspect it. If it's correct, press **Space**, the tree is marked done,
    progress is saved, and the next unfinished tree in the loaded set becomes
    current. That's the loop.
-3. If it needs fixing, **select** points with the lasso: press **L**, drag a
+3. If it needs fixing, **select** points with the lasso: press **Q**, drag a
    freehand loop (Shift adds), **Esc** to go back to navigating. The tree
-   under review is always the implicit target.
+   under review is always the implicit target. **B** inverts the selection
+   when the points you don't want are the easier shape to draw around.
+   Inverting only ever reaches points that are on screen, so a cross section,
+   a lasso section or a hidden tree still bounds it — and with nothing
+   selected, **B** selects everything currently shown.
 
    | Key | Operation |
    |-----|-----------|
@@ -245,6 +250,7 @@ to the right edge of the 3D view, next to the points they act on.
    | `R` / `T` | Tighten / loosen the cluster gap one step |
    | `Esc` | Back to camera / navigation |
    | `A` | Add selection to the current tree (missing branches, unassigned canopy) |
+   | `B` | Invert the selection, within what's on screen — with nothing selected it takes everything shown |
    | `1`…`5` | Move selection into a neighbouring tree — the 1st to 5th button under **Move selection into a tree**, nearest tree first, without switching tree first |
    | `S` | Split selection off as a new tree (it joins the queue unreviewed) |
    | `D` | Unassign selection, or the whole current tree if nothing is selected |

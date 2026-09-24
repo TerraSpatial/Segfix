@@ -60,6 +60,7 @@ def _panel():
         on_create_new=action("new tree"),
         on_unassign=action("unassign"),
         on_noise=action("noise"),
+        on_invert_selection=action("invert"),
         on_hide_neighbours=action("hide others"),
         on_fade_neighbours=action("fade others"),
         _step=lambda step: fired.append(f"step {step:+d}"),
@@ -79,7 +80,8 @@ def _does(key):
 EXPECTED = {
     "Q": "lasso", "W": "lasso tree", "E": "cluster",
     "R": "gap -1", "T": "gap +1",
-    "A": "add", "S": "new tree", "D": "unassign", "F": "show unassigned",
+    "A": "add", "S": "new tree", "B": "invert",
+    "D": "unassign", "F": "show unassigned",
     "G": "hide others", "Shift+G": "fade others",
     "X": "noise", "C": "cross section",
     "Z": "step -1", "V": "step +1",
